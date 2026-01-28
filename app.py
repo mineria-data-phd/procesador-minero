@@ -2,72 +2,65 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
-import io
+from io import BytesIO
 
-# Configuración de la página
-st.set_page_config(page_title="Procesador Minero Pro", layout="wide")
-
-st.title("⚒️ Extractor Masivo de Expedientes Mineros")
-st.markdown("Sube uno o varios PDFs para generar tu tabla de Excel automáticamente.")
+st.set_page_config(page_title="Extractor Minero Pro", layout="wide")
+st.title("⚒️ Extractor de Expedientes Mineros (Versión Mejorada)")
 
 def extraer_datos_mineros(pdf_file):
-    texto = ""
+    texto_completo = ""
     with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t: texto += t + "\n"
-
-    # Lógica inteligente con Regex (Busca patrones, no palabras fijas)
-    # Busca Nombres después de palabras clave como PEDIMENTO o MANIFESTACION
-    nombre_raw = re.search(r"(?:PEDIMENTO|MANIFESTACION|MINA|Mina)\s+([\w\s-]+)", texto)
+        for pagina in pdf.pages:
+            texto_completo += pagina.extract_text() + "\n"
     
-    # Busca Roles con formato V-000-0000
-    rol_raw = re.search(r"(?:Rol|Causa|V-)\s*(\d+-\d+|V-\d+-\d+)", texto, re.I)
+    # Lógica de extracción mejorada con expresiones regulares (Regex)
+    # Buscamos el Rol (ej: V-1006-2022)
+    rol = re.search(r'[A-Z]-\d+-\d{4}', texto_completo)
     
-    # Busca Inscripción (Fojas y Número)
-    fojas_raw = re.search(r"(?:Fs|Fojas|fs)\.?\s*([\d\.]+)", texto, re.I)
-    num_raw = re.search(r"(?:N°|Nº|Nro|número)\s*([\d\.]+)", texto, re.I)
-    ano_raw = re.search(r"(?:Año|año|AÑO)\s*(\d{4})", texto)
-
-    # Busca Coordenadas UTM (formato 6 o 7 millones)
-    norte_raw = re.search(r"(?:N|Norte)[:\s]*([\d\.]+)", texto, re.I)
-    este_raw = re.search(r"(?:E|Este)[:\s]*([\d\.]+)", texto, re.I)
+    # Buscamos Fojas
+    fojas = re.search(r'Fojas\s*[:\s]*(\d+\.?\d*)', texto_completo, re.IGNORECASE)
+    
+    # Buscamos Coordenadas (evitando confundir con años)
+    norte = re.search(r'Norte[:\s]*(\d{7})', texto_completo, re.IGNORECASE)
+    este = re.search(r'Este[:\s]*(\d{6})', texto_completo, re.IGNORECASE)
+    
+    # Detectar Tipo de Solicitud
+    tipo = "Concesión"
+    if "rectificación" in texto_completo.lower():
+        tipo = "Rectificación de Mensura"
+    elif "mensura" in texto_completo.lower():
+        tipo = "Solicitud de Mensura"
 
     return {
         "Archivo": pdf_file.name,
-        "Nombre Mina": nombre_raw.group(1).strip() if nombre_raw else "No detectado",
-        "Rol/Causa": rol_raw.group(0) if rol_raw else "S/R",
-        "Fojas": fojas_raw.group(1) if fojas_raw else "",
-        "Número": num_raw.group(1) if num_raw else "",
-        "Año": ano_raw.group(1) if ano_raw else "",
-        "Coordenada Norte": norte_raw.group(1) if norte_raw else "",
-        "Coordenada Este": este_raw.group(1) if este_raw else ""
+        "Tipo de Trámite": tipo,
+        "Rol/Causa": rol.group(0) if rol else "No detectado",
+        "Fojas": fojas.group(1) if fojas else "No detectado",
+        "Norte (Y)": norte.group(1) if norte else "Ver manual",
+        "Este (X)": este.group(1) if este else "Ver manual"
     }
 
-# Lógica de la interfaz
-uploaded_files = st.file_uploader("Arrastra aquí tus archivos PDF", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader("Sube tus PDFs aquí", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
     resultados = []
     for file in uploaded_files:
-        with st.spinner(f"Procesando {file.name}..."):
-            datos = extraer_datos_mineros(file)
-            resultados.append(datos)
+        datos = extraer_datos_mineros(file)
+        resultados.append(datos)
     
     df = pd.DataFrame(resultados)
-    
-    st.success("¡Procesamiento completado!")
-    st.write("### Vista previa de los datos extraídos:")
-    st.dataframe(df)
+    st.subheader("Vista previa de los datos legales:")
+    st.table(df)
 
-    # Botón para descargar Excel
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    # Botón para Excel
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Datos_Mineros')
     
     st.download_button(
-        label="📥 Descargar todo en Excel",
+        label="📥 Descargar Excel Corregido",
         data=output.getvalue(),
-        file_name="consolidado_minero.xlsx",
+        file_name="expedientes_mineros_corregidos.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
     )
