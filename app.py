@@ -5,7 +5,7 @@ import re
 from io import BytesIO
 
 st.set_page_config(page_title="Extractor Minero Pro", layout="wide")
-st.title("⚒️ Extractor de Expedientes Mineros (Versión Mejorada)")
+st.title("⚒️ Extractor de Expedientes Mineros")
 
 def extraer_datos_mineros(pdf_file):
     texto_completo = ""
@@ -13,31 +13,34 @@ def extraer_datos_mineros(pdf_file):
         for pagina in pdf.pages:
             texto_completo += pagina.extract_text() + "\n"
     
-    # Lógica de extracción mejorada con expresiones regulares (Regex)
-    # Buscamos el Rol (ej: V-1006-2022)
-    rol = re.search(r'[A-Z]-\d+-\d{4}', texto_completo)
+    # --- LÓGICA DE EXTRACCIÓN MEJORADA ---
+    # 1. Identificar si es Rectificación o Concesión
+    tipo = "Concesión Minera"
+    if "rectificación" in texto_completo.lower() or "rectificacion" in texto_completo.lower():
+        tipo = "Solicitud de Rectificación"
     
-    # Buscamos Fojas
-    fojas = re.search(r'Fojas\s*[:\s]*(\d+\.?\d*)', texto_completo, re.IGNORECASE)
+    # 2. Extraer Rol (Ej: V-1006-2022)
+    rol_match = re.search(r'[A-Z]-\d+-\d{4}', texto_completo)
+    rol = rol_match.group(0) if rol_match else "No detectado"
     
-    # Buscamos Coordenadas (evitando confundir con años)
-    norte = re.search(r'Norte[:\s]*(\d{7})', texto_completo, re.IGNORECASE)
-    este = re.search(r'Este[:\s]*(\d{6})', texto_completo, re.IGNORECASE)
+    # 3. Extraer Fojas
+    fojas_match = re.search(r'Fojas\s*[:\s]*(\d+\.?\d*)', texto_completo, re.IGNORECASE)
+    fojas = fojas_match.group(1) if fojas_match else "No detectado"
     
-    # Detectar Tipo de Solicitud
-    tipo = "Concesión"
-    if "rectificación" in texto_completo.lower():
-        tipo = "Rectificación de Mensura"
-    elif "mensura" in texto_completo.lower():
-        tipo = "Solicitud de Mensura"
+    # 4. Extraer Coordenadas (Buscamos números de 6 o 7 dígitos específicos)
+    norte_match = re.search(r'Norte[:\s]*(\d{7})', texto_completo, re.IGNORECASE)
+    este_match = re.search(r'Este[:\s]*(\d{6})', texto_completo, re.IGNORECASE)
+    
+    norte = norte_match.group(1) if norte_match else "Revisar PDF"
+    este = este_match.group(1) if este_match else "Revisar PDF"
 
     return {
         "Archivo": pdf_file.name,
         "Tipo de Trámite": tipo,
-        "Rol/Causa": rol.group(0) if rol else "No detectado",
-        "Fojas": fojas.group(1) if fojas else "No detectado",
-        "Norte (Y)": norte.group(1) if norte else "Ver manual",
-        "Este (X)": este.group(1) if este else "Ver manual"
+        "Rol/Causa": rol,
+        "Fojas": fojas,
+        "Coordenada Norte (Y)": norte,
+        "Coordenada Este (X)": este
     }
 
 uploaded_files = st.file_uploader("Sube tus PDFs aquí", type="pdf", accept_multiple_files=True)
@@ -49,18 +52,18 @@ if uploaded_files:
         resultados.append(datos)
     
     df = pd.DataFrame(resultados)
-    st.subheader("Vista previa de los datos legales:")
+    st.success("¡Procesamiento completado!")
+    st.subheader("Vista previa de los datos extraídos:")
     st.table(df)
 
-    # Botón para Excel
+    # Preparar descarga de Excel
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Datos_Mineros')
     
     st.download_button(
-        label="📥 Descargar Excel Corregido",
+        label="📥 Descargar todo en Excel",
         data=output.getvalue(),
-        file_name="expedientes_mineros_corregidos.xlsx",
+        file_name="datos_expedientes.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
     )
