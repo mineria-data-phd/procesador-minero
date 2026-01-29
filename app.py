@@ -9,14 +9,10 @@ st.title("⚒️ Extractor de Expedientes Mineros")
 
 def identificar_tramite(texto):
     t = texto.lower()
-    if "rectificación" in t or "rectificacion" in t:
-        return "Solicitud de Rectificación"
-    if "testificación" in t or "testificacion" in t:
-        return "Solicitud de Testificación"
-    if "mensura" in t:
-        return "Solicitud de Mensura"
-    if "pedimento" in t or "manifestación" in t or "manifestacion" in t:
-        return "Manifestación y Pedimento"
+    if "rectificación" in t or "rectificacion" in t: return "Solicitud de Rectificación"
+    if "testificación" in t or "testificacion" in t: return "Solicitud de Testificación"
+    if "mensura" in t: return "Solicitud de Mensura"
+    if "pedimento" in t or "manifestación" in t or "manifestacion" in t: return "Manifestación y Pedimento"
     return "Extracto EM y EP"
 
 def extraer_datos_mineros(pdf_file):
@@ -26,36 +22,32 @@ def extraer_datos_mineros(pdf_file):
             txt = pagina.extract_text()
             if txt: texto_sucio += txt + " \n "
 
-    # Limpieza para búsqueda lineal
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # 1. TIPO DE TRÁMITE
-    tipo = identificar_tramite(cuerpo)
-
-    # 2. JUZGADO (Regla mejorada para Copiapó y otros)
-    # Busca patrones como "1° Juzgado de Letras de XXXXX"
-    juzgado_match = re.search(r'(\d+°?\s*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
-    juzgado = juzgado_match.group(0).strip() if juzgado_match else "No detectado"
-
-    # 3. NOMBRE DE LA MINA
-    nombre = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
+    # --- 1. JUZGADO (Lógica Robusta) ---
+    # Intento 1: Patrón estándar (1° Juzgado...)
+    juz_match = re.search(r'(\d+[°º\s]*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
+    # Intento 2: Si falla, busca la ciudad (Copiapó, Ovalle, etc) cerca de la palabra Juzgado
+    if not juz_match:
+        juz_match = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     
-    # 4. SOLICITANTE (Antes del RUT)
+    juzgado = juz_match.group(0).strip() if juz_match else "No detectado"
+
+    # --- 2. TRAMITE, MINA Y SOLICITANTE ---
+    tipo = identificar_tramite(cuerpo)
+    nombre = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,65})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|domiciliado))', cuerpo)
 
-    # 5. ROL / CAUSA
+    # --- 3. ROL, FOJAS Y COMUNA (Soporte nombres compuestos) ---
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
-    
-    # 6. FOJAS
     fojas = re.search(r'(?:fojas|Fs\.|Fjs\.)\s*([\d\.]+)', cuerpo, re.IGNORECASE)
     if not fojas:
         fojas = re.search(r'(\d{1,3}\.?\d{0,3})\s+N°', cuerpo)
 
-    # 7. COMUNA (Nombres compuestos)
-    comuna_match = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fojas| fjs| juzgado)', cuerpo)
-    comuna = comuna_match.group(1).strip() if comuna_match else "No detectado"
+    com_match = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
+    comuna = com_match.group(1).strip() if com_match else "No detectado"
 
-    # 8. COORDENADAS Y CVE
+    # --- 4. COORDENADAS Y CVE ---
     norte = re.search(r'Norte[:\s]*([\d\.]{7,10})', cuerpo, re.IGNORECASE)
     este = re.search(r'Este[:\s]*([\d\.]{6,9})', cuerpo, re.IGNORECASE)
     cve = re.search(r'CVE\s*[:\s]*(\d+)', cuerpo, re.IGNORECASE)
