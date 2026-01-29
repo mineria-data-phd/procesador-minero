@@ -7,12 +7,13 @@ from io import BytesIO
 st.set_page_config(page_title="Extractor Minero Pro", layout="wide")
 st.title("⚒️ Extractor de Expedientes Mineros")
 
-def limpiar_dato(texto, tipo="general"):
+def limpiar_y_cortar(texto, es_nombre_mina=False):
     if not texto: return "No detectado"
+    # Eliminar saltos de línea y limpiar espacios
     limpio = " ".join(texto.split()).strip()
-    if tipo == "nombre":
-        # Corta en puntos, comas o frases legales típicas para no traer párrafos
-        limpio = re.split(r'[\.\"\”\“]|,?\s*POR TANTO', limpio)[0]
+    if es_nombre_mina:
+        # Corta si encuentra palabras legales que sobran
+        limpio = re.split(r'[\.\"\”\“]|,?\s*POR TANTO|,?\s*en mérito', limpio)[0]
     return limpio.replace('"', '').strip()
 
 def extraer_datos_mineros(pdf_file):
@@ -20,22 +21,22 @@ def extraer_datos_mineros(pdf_file):
     with pdfplumber.open(pdf_file) as pdf:
         for pagina in pdf.pages:
             texto_pagina = pagina.extract_text()
-            if texto_pagina:
-                texto_completo += texto_pagina + "\n"
+            if texto_pagina: texto_completo += texto_pagina + "\n"
     
-    # 1. CVE y JUZGADO (Búsqueda más flexible)
+    # 1. CVE y JUZGADO
     cve = re.search(r'CVE\s*(\d+)', texto_completo)
     juzg = re.search(r'(\d+º?\s*Juzgado\s+de\s+Letras\s+de\s+[\wÁÉÍÓÚÑ]+)', texto_completo, re.IGNORECASE)
 
-    # 2. NOMBRE DE LA MINA
-    nombre = re.search(r'(?:denominada|denominará|concesión)\s+[\"“]?([\w\s\dÁÉÍÓÚÑ]+)', texto_completo, re.IGNORECASE)
+    # 2. NOMBRE DE LA MINA (Busca texto entre comillas, que es el estándar minero)
+    nombre = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\s]+)[\"”]', texto_completo)
     if not nombre:
-        nombre = re.search(r'PEDIMENTO MINERO\s+([\w\s\dÁÉÍÓÚÑ]+)', texto_completo)
+        nombre = re.search(r'(?:denominada|denominará|pertenencia)\s+([\w\s\dÁÉÍÓÚÑ]+)', texto_completo, re.IGNORECASE)
 
-    # 3. SOLICITANTE (Busca nombres largos antes del RUT o cerca de S.J.L.)
-    solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{15,60})\s*,?\s*(?:cédula|R\.U\.T|RUT)', texto_completo)
+    # 3. SOLICITANTE (Busca el nombre que viene antes de 'abogado', 'RUT' o 'en representación')
+    solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{15,70})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|en representación|domiciliado))', texto_completo)
     if not solic:
-        solic = re.search(r'S\.J\.L\.\s+([A-ZÁÉÍÓÚÑ\s]{15,60})', texto_completo)
+        # Intento 2: Buscar después de S.J.L.
+        solic = re.search(r'S\.J\.L\.\s*,\s*([A-ZÁÉÍÓÚÑ\s]{15,70})', texto_completo)
 
     # 4. ROL, FOJAS Y COMUNA
     rol = re.search(r'([A-Z]-\d+-\d{4})', texto_completo)
@@ -52,12 +53,12 @@ def extraer_datos_mineros(pdf_file):
     return {
         "Archivo": pdf_file.name,
         "CVE": cve.group(1) if cve else "No detectado",
-        "Nombre Mina": limpiar_dato(nombre.group(1), "nombre") if nombre else "No detectado",
-        "Solicitante": limpiar_dato(solic.group(1)) if solic else "No detectado",
+        "Nombre Mina": limpiar_y_cortar(nombre.group(1), True) if nombre else "No detectado",
+        "Solicitante": limpiar_y_cortar(solic.group(1)) if solic else "No detectado",
         "Rol/Causa": rol.group(1) if rol else "No detectado",
         "Fojas": fojas.group(1) if fojas else "No detectado",
         "Comuna": comu.group(1).capitalize() if comu else "No detectado",
-        "Juzgado": limpiar_dato(juzg.group(1)) if juzg else "No detectado",
+        "Juzgado": limpiar_y_cortar(juzg.group(1)) if juzg else "No detectado",
         "Norte (Y)": norte.group(1).replace(".", "") if norte else "Ver PDF",
         "Este (X)": este.group(1).replace(".", "") if este else "Ver PDF"
     }
