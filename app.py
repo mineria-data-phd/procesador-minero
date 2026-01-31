@@ -5,13 +5,13 @@ import re
 import os
 import zipfile
 import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import box
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero Pro + GIS", layout="wide")
-st.title("⚒️ Extractor de Expedientes y Generador Shapefile")
+st.set_page_config(page_title="Extractor Minero Pro + Polígonos", layout="wide")
+st.title("⚒️ Extractor de Expedientes y Generador de Polígonos SHP")
 
-# --- FUNCIONES DE EXTRACCIÓN (Mantenemos tu lógica ganadora) ---
+# ... [Mantenemos las funciones de extracción que ya funcionan perfecto] ...
 def identificar_tramite(texto):
     t = texto.lower()
     if "rectificación" in t or "rectificacion" in t: return "Solicitud de Rectificación"
@@ -28,7 +28,7 @@ def extraer_datos_mineros(pdf_file):
             if txt: texto_sucio += txt + " \n "
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # Juzgado
+    # Extracción de Juzgado, Nombre y Solicitante (Tu lógica actual)
     diccionario_juzgados = {"primer": "1°", "1": "1°", "primero": "1°", "segundo": "2°", "2": "2°", "tercer": "3°", "3": "3°", "tercero": "3°"}
     juz_base = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     juzgado = "No detectado"
@@ -41,7 +41,6 @@ def extraer_datos_mineros(pdf_file):
             juzgado = f"{prefijo} {juz_base.group(0)}"
         else: juzgado = juz_base.group(0)
 
-    # Nombre y Solicitante
     nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     if nombre == "No detectado":
@@ -56,19 +55,17 @@ def extraer_datos_mineros(pdf_file):
         if empresa: solicitante = empresa.group(1).strip()
 
     # Coordenadas
-    norte_match = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
-    este_match = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
+    n_m = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
+    e_m = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     
     def limpiar_coord(coord):
         if not coord: return None
         limpia = re.sub(r'[\.\,\s]', '', coord)
         return float(limpia) if limpia.isdigit() else None
 
-    norte = limpiar_coord(norte_match.group(1)) if norte_match else None
-    este = limpiar_coord(este_match.group(1)) if este_match else None
-
+    norte = limpiar_coord(n_m.group(1)) if n_m else None
+    este = limpiar_coord(e_m.group(1)) if e_m else None
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
-    comuna = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})', cuerpo)
 
     return {
         "Archivo": pdf_file.name,
@@ -89,37 +86,39 @@ if uploaded_files:
     df = pd.DataFrame(results)
     st.dataframe(df)
 
-    # 1. Exportar Excel
+    # 1. Excel
     output_excel = BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False)
     st.download_button("📥 Descargar Excel", output_excel.getvalue(), "Datos_Mineros.xlsx")
 
-    # 2. Exportar Shapefile
-    # Solo procesamos filas que tengan coordenadas válidas
+    # 2. Generación de POLÍGONOS Shapefile
     df_geo = df.dropna(subset=['Norte_Y', 'Este_X']).copy()
     
     if not df_geo.empty:
-        # Creamos la geometría (Puntos)
-        geometry = [Point(xy) for xy in zip(df_geo.Este_X, df_geo.Norte_Y)]
-        # Definimos el Sistema de Referencia (EPSG:32719 es WGS84 / UTM zone 19S)
-        gdf = gpd.GeoDataFrame(df_geo, geometry=geometry, crs="EPSG:32719")
+        # Creamos los polígonos de 1.000m (Norte-Sur) x 3.000m (Este-Oeste)
+        # El P.P suele ser el vértice inferior izquierdo, o el centro. 
+        # Aquí lo definiremos como el centro para cubrir el área de influencia.
+        poligonos = []
+        for index, row in df_geo.iterrows():
+            # Definimos los límites: 3000m de ancho (E-O) y 1000m de alto (N-S)
+            min_x = row.Este_X - 1500
+            max_x = row.Este_X + 1500
+            min_y = row.Norte_Y - 500
+            max_y = row.Norte_Y + 500
+            poligonos.append(box(min_x, min_y, max_x, max_y))
         
-        # Guardar temporalmente para comprimir
+        gdf = gpd.GeoDataFrame(df_geo, geometry=poligonos, crs="EPSG:32719")
+        
+        # Guardado y compresión
         temp_dir = "temp_shp"
         if not os.path.exists(temp_dir): os.makedirs(temp_dir)
-        
-        base_name = "Concesiones_Mineras"
-        shp_path = os.path.join(temp_dir, f"{base_name}.shp")
-        gdf.to_file(shp_path)
+        base_name = "Concesiones_Poligonos"
+        gdf.to_file(os.path.join(temp_dir, f"{base_name}.shp"))
 
-        # Crear ZIP
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w') as zf:
             for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                file_path = os.path.join(temp_dir, f"{base_name}{ext}")
-                zf.write(file_path, arcname=f"{base_name}{ext}")
+                zf.write(os.path.join(temp_dir, f"{base_name}{ext}"), arcname=f"{base_name}{ext}")
         
-        st.download_button("🌍 Descargar Shapefile (ZIP)", zip_buffer.getvalue(), "Concesiones_GIS.zip")
-    else:
-        st.warning("No se detectaron coordenadas válidas para generar el Shapefile.")
+        st.download_button("🌍 Descargar Polígonos SHP (ZIP)", zip_buffer.getvalue(), "Concesiones_Poligonos.zip")
