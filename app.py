@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pdfplumber
 import pandas as pd
@@ -18,29 +19,31 @@ def identificar_tramite(texto):
 def extraer_datos_mineros(pdf_file):
     texto_sucio = ""
     with pdfplumber.open(pdf_file) as pdf:
+        # Leemos especialmente bien la primera página para el Juzgado
         for pagina in pdf.pages:
             txt = pagina.extract_text()
             if txt: texto_sucio += txt + " \n "
 
-    # Unimos todo eliminando saltos de línea extra para que el radar funcione
+    # Aplanamos el texto eliminando ruidos
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. RADAR DE JUZGADOS (Soporta números, letras y saltos) ---
-    # Este patrón es mucho más potente: busca el orden, la palabra juzgado y la ciudad
-    patron_juzgado = r'((?:\d+[°º\s]*|Primer|Segundo|Tercer|Cuarto|Quinto)\s*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)'
+    # --- 1. JUZGADO (Lógica Ultra-Flexible) ---
+    # Buscamos números (1, 2, 3), palabras (Primer, Segundo) y cualquier símbolo de grado
+    patron_juzgado = r'((?:\d+[\s°º°\.]*|Primer|Segundo|Tercer|Cuarto|Quinto)\s*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)'
     juz_match = re.search(patron_juzgado, cuerpo, re.IGNORECASE)
     
     if not juz_match:
-        # Intento de rescate: busca solo "Juzgado de Letras de ..."
+        # Si falla, buscamos solo la mención al juzgado y la ciudad
         juz_match = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     
     juzgado = juz_match.group(0).strip() if juz_match else "No detectado"
 
     # --- 2. NOMBRE DE LA MINA (Reforzado para 6641) ---
-    # Buscamos primero entre comillas, si no, buscamos palabras clave
+    # Prioridad 1: Entre comillas
     nombre = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     if not nombre:
-        nombre = re.search(r'(?i)(?:denominada|pertenencia|mina)\s+([A-ZÁÉÍÓÚÑ\d\s]{3,40})', cuerpo)
+        # Prioridad 2: Después de "denominada" o "mina"
+        nombre = re.search(r'(?i)(?:denominada|pertenencia|mina|llamada)\s+([A-ZÁÉÍÓÚÑ\d\s]{3,40})', cuerpo)
 
     # --- 3. SOLICITANTE ---
     solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|procurador|domiciliado))', cuerpo)
@@ -51,7 +54,7 @@ def extraer_datos_mineros(pdf_file):
     if not fojas:
         fojas = re.search(r'(\d{1,4}\.?\d{0,3})\s+N°', cuerpo)
 
-    # Comuna extendida (ej: Las Condes, La Serena)
+    # Comuna completa (Las Condes, La Serena, etc.)
     com_match = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
     comuna = com_match.group(1).strip() if com_match else "No detectado"
 
@@ -86,4 +89,4 @@ if uploaded_files:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df[cols].to_excel(writer, index=False)
-    st.download_button("📥 Descargar Reporte Completo", output.getvalue(), "Base_Datos_Mineria.xlsx")
+    st.download_button("📥 Descargar Reporte Final", output.getvalue(), "Base_Datos_Mineria_PRO.xlsx")
