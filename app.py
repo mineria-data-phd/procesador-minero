@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pdfplumber
 import pandas as pd
@@ -19,46 +18,48 @@ def identificar_tramite(texto):
 def extraer_datos_mineros(pdf_file):
     texto_sucio = ""
     with pdfplumber.open(pdf_file) as pdf:
-        # Leemos especialmente bien la primera página para el Juzgado
         for pagina in pdf.pages:
             txt = pagina.extract_text()
             if txt: texto_sucio += txt + " \n "
 
-    # Aplanamos el texto eliminando ruidos
+    # Normalización total para que los saltos de línea no rompan la búsqueda
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. JUZGADO (Lógica Ultra-Flexible) ---
-    # Buscamos números (1, 2, 3), palabras (Primer, Segundo) y cualquier símbolo de grado
-    patron_juzgado = r'((?:\d+[\s°º°\.]*|Primer|Segundo|Tercer|Cuarto|Quinto)\s*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)'
-    juz_match = re.search(patron_juzgado, cuerpo, re.IGNORECASE)
+    # --- 1. JUZGADO (Lógica de Proximidad) ---
+    # Buscamos la frase base "Juzgado de Letras de [Ciudad]"
+    juz_base = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     
-    if not juz_match:
-        # Si falla, buscamos solo la mención al juzgado y la ciudad
-        juz_match = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
-    
-    juzgado = juz_match.group(0).strip() if juz_match else "No detectado"
+    if juz_base:
+        pos = juz_base.start()
+        # Miramos un poco antes del hallazgo para ver si hay un número o palabra de orden
+        fragmento_anterior = cuerpo[max(0, pos-20):pos].strip()
+        orden = re.search(r'(\d+[\s°º°\.]*|Primer|Segundo|Tercer|Cuarto|Quinto)', fragmento_anterior, re.IGNORECASE)
+        
+        prefix = orden.group(0).strip() if orden else ""
+        juzgado = f"{prefix} {juz_base.group(0)}".strip()
+    else:
+        juzgado = "No detectado"
 
-    # --- 2. NOMBRE DE LA MINA (Reforzado para 6641) ---
-    # Prioridad 1: Entre comillas
+    # --- 2. NOMBRE DE LA MINA Y SOLICITANTE (Reforzado para 6641) ---
+    # Si no hay comillas, buscamos el bloque en mayúsculas tras "denominada"
     nombre = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     if not nombre:
-        # Prioridad 2: Después de "denominada" o "mina"
         nombre = re.search(r'(?i)(?:denominada|pertenencia|mina|llamada)\s+([A-ZÁÉÍÓÚÑ\d\s]{3,40})', cuerpo)
 
-    # --- 3. SOLICITANTE ---
-    solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|procurador|domiciliado))', cuerpo)
+    # Solicitante: Todo lo que esté antes del RUT/Cédula
+    solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|domiciliado))', cuerpo)
 
-    # --- 4. ROL, FOJAS Y COMUNA ---
+    # --- 3. ROL, FOJAS Y COMUNA ---
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
     fojas = re.search(r'(?i)(?:fojas|Fs\.|Fjs\.)\s*([\d\.]+)', cuerpo)
     if not fojas:
         fojas = re.search(r'(\d{1,4}\.?\d{0,3})\s+N°', cuerpo)
 
-    # Comuna completa (Las Condes, La Serena, etc.)
+    # Comuna: Captura nombres compuestos como "Las Condes"
     com_match = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
     comuna = com_match.group(1).strip() if com_match else "No detectado"
 
-    # --- 5. COORDENADAS Y CVE ---
+    # --- 4. COORDENADAS Y CVE ---
     tipo = identificar_tramite(cuerpo)
     norte = re.search(r'Norte[:\s]*([\d\.]{7,10})', cuerpo, re.IGNORECASE)
     este = re.search(r'Este[:\s]*([\d\.]{6,9})', cuerpo, re.IGNORECASE)
