@@ -22,39 +22,39 @@ def extraer_datos_mineros(pdf_file):
             txt = pagina.extract_text()
             if txt: texto_sucio += txt + " \n "
 
-    # Unimos el texto eliminando saltos de línea innecesarios
+    # Limpieza estándar para mantener la estructura lineal
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. JUZGADO (Captura exacta de 1°, 2° o 3°) ---
-    # Busca específicamente un dígito seguido del símbolo de grado y la frase legal
+    # --- 1. JUZGADO (Captura exacta de 1°, 2°, 3°) ---
+    # Esta regla busca obligatoriamente el número seguido del símbolo de grado
     juz_match = re.search(r'(\d+[°º]\s*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo)
     
-    # Si no encuentra con el símbolo, busca solo el Juzgado de Letras (como respaldo)
+    # Si falla la búsqueda con símbolo, intentamos capturar el nombre del juzgado solo
     if not juz_match:
         juz_match = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     
     juzgado = juz_match.group(0).strip() if juz_match else "No detectado"
 
-    # --- 2. NOMBRE DE LA MINA Y SOLICITANTE (Mejorado para 6641) ---
-    # Prioridad: Texto en mayúsculas entre comillas
-    nombre_match = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
-    nombre = nombre_match.group(1).strip() if nombre_match else "No detectado"
+    # --- 2. NOMBRE DE LA MINA Y SOLICITANTE (Fuerza para 6641) ---
+    # Mina: Entre comillas o tras palabras clave
+    nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
+    nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     
-    # Si falla 6641, buscar el primer bloque de mayúsculas después de S.J.L.
     if nombre == "No detectado":
-        respaldo_nombre = re.search(r'S\.J\.L\.,?\s*([A-ZÁÉÍÓÚÑ\s]{5,50})', cuerpo)
-        if respaldo_nombre: nombre = respaldo_nombre.group(1).strip()
+        # Intento para 6641: buscar después de S.J.L.
+        respaldo = re.search(r'S\.J\.L\.,?\s*([A-ZÁÉÍÓÚÑ\s]{5,50})', cuerpo)
+        if respaldo: nombre = respaldo.group(1).strip()
 
-    # Solicitante: Texto antes del RUT
-    solic_match = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo)
-    solicitante = solic_match.group(1).strip() if solic_match else "No detectado"
+    # Solicitante: Mayúsculas antes de la palabra RUT o Cédula
+    solic_m = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo)
+    solicitante = solic_m.group(1).strip() if solic_m else "No detectado"
 
-    # --- 3. OTROS CAMPOS ---
+    # --- 3. DATOS TÉCNICOS ---
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
     fojas = re.search(r'(?i)(?:fojas|Fs\.|Fjs\.)\s*([\d\.]+)', cuerpo)
     
-    com_match = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
-    comuna = com_match.group(1).strip() if com_match else "No detectado"
+    com_m = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
+    comuna = com_m.group(1).strip() if com_m else "No detectado"
 
     tipo = identificar_tramite(cuerpo)
     norte = re.search(r'Norte[:\s]*([\d\.]{7,10})', cuerpo, re.IGNORECASE)
@@ -86,4 +86,4 @@ if uploaded_files:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df[cols].to_excel(writer, index=False)
-    st.download_button("📥 Descargar Reporte", output.getvalue(), "Mineria_Data.xlsx")
+    st.download_button("📥 Descargar Reporte", output.getvalue(), "Base_Mineria.xlsx")
