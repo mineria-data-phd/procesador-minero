@@ -8,13 +8,12 @@ import geopandas as gpd
 from shapely.geometry import Polygon
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero para ArcMap", layout="wide")
-st.title("⚒️ Extractor de Expedientes: Generador de Polígonos para ArcMap")
+st.set_page_config(page_title="Extractor Minero ArcMap Pro", layout="wide")
+st.title("⚒️ Generador de Polígonos SHP (4 Vértices)")
 
 def identificar_tramite(texto):
     t = texto.lower()
     if "rectificación" in t or "rectificacion" in t: return "Solicitud de Rectificación"
-    if "testificación" in t or "testificacion" in t: return "Solicitud de Testificación"
     if "mensura" in t: return "Solicitud de Mensura"
     if "pedimento" in t or "manifestación" in t or "manifestacion" in t: return "Manifestación y Pedimento"
     return "Extracto EM y EP"
@@ -27,31 +26,7 @@ def extraer_datos_mineros(pdf_file):
             if txt: texto_sucio += txt + " \n "
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- EXTRACCIÓN DE IDENTIFICADORES ---
-    # Juzgado
-    diccionario_juzgados = {"primer": "1°", "1": "1°", "primero": "1°", "segundo": "2°", "2": "2°", "tercer": "3°", "3": "3°", "tercero": "3°"}
-    juz_base = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
-    juzgado = "No detectado"
-    if juz_base:
-        pos = juz_base.start()
-        fragmento = cuerpo[max(0, pos-20):pos].lower().strip()
-        orden_match = re.search(r'\b(primer|segundo|tercer|1|2|3)\b', fragmento)
-        if orden_match:
-            prefijo = diccionario_juzgados.get(orden_match.group(1), orden_match.group(1) + "°")
-            juzgado = f"{prefijo} {juz_base.group(0)}"
-        else: juzgado = juz_base.group(0)
-
-    # Nombre y Solicitante
-    nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
-    nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
-    if nombre == "No detectado":
-        especifico = re.search(r'\b([A-Z]{3,}\s\d+\-[A-Z])\b', cuerpo)
-        nombre = especifico.group(1).strip() if especifico else "No detectado"
-
-    solic_match = re.search(r'(?:Demandante|Solicitante)[:\s]*([A-ZÁÉÍÓÚÑ\s\(\)]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo, re.IGNORECASE)
-    solicitante = solic_match.group(1).strip() if solic_match else "No detectado"
-
-    # --- COORDENADAS (X, Y) ---
+    # --- Extracción de Coordenadas del Punto Medio ---
     e_m = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     n_m = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
     
@@ -62,35 +37,33 @@ def extraer_datos_mineros(pdf_file):
 
     x_c = limpiar_coord(e_m.group(1)) if e_m else None
     y_c = limpiar_coord(n_m.group(1)) if n_m else None
+
+    # --- Cálculo de los 4 Vértices ---
+    # Rectángulo de 3.000m (X) x 1.000m (Y) = 3.000.000 m2 = 300 Ha
+    v1_x, v1_y = (x_c - 1500, y_c + 500) if x_c else (None, None) # NW
+    v2_x, v2_y = (x_c + 1500, y_c + 500) if x_c else (None, None) # NE
+    v3_x, v3_y = (x_c + 1500, y_c - 500) if x_c else (None, None) # SE
+    v4_x, v4_y = (x_c - 1500, y_c - 500) if x_c else (None, None) # SW
+
+    # --- Otros Datos ---
+    nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
+    nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
+    solic_match = re.search(r'(?:Demandante|Solicitante)[:\s]*([A-ZÁÉÍÓÚÑ\s\(\)]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo, re.IGNORECASE)
+    solicitante = solic_match.group(1).strip() if solic_match else "No detectado"
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
 
-    # --- CÁLCULO DE LOS 4 VÉRTICES (Rectángulo 3000m x 1000m) ---
-    v = {}
-    if x_c and y_c:
-        # V1: NW, V2: NE, V3: SE, V4: SW
-        v_coords = [
-            (x_c - 1500, y_c + 500), # V1
-            (x_c + 1500, y_c + 500), # V2
-            (x_c + 1500, y_c - 500), # V3
-            (x_c - 1500, y_c - 500)  # V4
-        ]
-        for i, (vx, vy) in enumerate(v_coords, 1):
-            v[f'V{i}_X'] = vx
-            v[f'V{i}_Y'] = vy
-    else:
-        for i in range(1, 5): 
-            v[f'V{i}_X'] = v[f'V{i}_Y'] = None
-
-    res = {
+    return {
         "Archivo": pdf_file.name,
         "Nombre": nombre,
         "Solicitante": solicitante,
         "Rol": rol.group(1) if rol else "No detectado",
-        "Juzgado": juzgado,
+        "V1_X": v1_x, "V1_Y": v1_y,
+        "V2_X": v2_x, "V2_Y": v2_y,
+        "V3_X": v3_x, "V3_Y": v3_y,
+        "V4_X": v4_x, "V4_Y": v4_y,
+        "Hectareas": 300,
         "Tipo": identificar_tramite(cuerpo)
     }
-    res.update(v)
-    return res
 
 uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
 
@@ -99,29 +72,31 @@ if uploaded_files:
     df = pd.DataFrame(data)
     st.dataframe(df)
 
-    # Excel
+    # 1. Excel con los 4 Vértices
     out_ex = BytesIO()
     with pd.ExcelWriter(out_ex, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False)
-    st.download_button("📥 Descargar Tabla para ArcMap", out_ex.getvalue(), "Coordenadas_Vertices.xlsx")
+    st.download_button("📥 Descargar Excel de Vértices", out_ex.getvalue(), "Coordenadas_Vértices.xlsx")
 
-    # Shapefile Polígono
+    # 2. Shapefile de Polígonos (Calculado con los 4 vértices)
     df_geo = df.dropna(subset=['V1_X', 'V1_Y']).copy()
     if not df_geo.empty:
-        poligonos = []
+        geometrias = []
         for _, r in df_geo.iterrows():
-            # Crear polígono cerrado uniendo los 4 vértices
-            p = Polygon([(r.V1_X, r.V1_Y), (r.V2_X, r.V2_Y), (r.V3_X, r.V3_Y), (r.V4_X, r.V4_Y)])
-            poligonos.append(p)
+            # Creamos el polígono cerrando los 4 puntos calculados
+            poly = Polygon([(r.V1_X, r.V1_Y), (r.V2_X, r.V2_Y), (r.V3_X, r.V3_Y), (r.V4_X, r.V4_Y)])
+            geometrias.append(poly)
         
-        gdf = gpd.GeoDataFrame(df_geo, geometry=poligonos, crs="EPSG:32719")
+        gdf = gpd.GeoDataFrame(df_geo, geometry=geometrias, crs="EPSG:32719")
         
+        # Guardar archivos del SHP
         temp = "temp_shp"
         if not os.path.exists(temp): os.makedirs(temp)
-        gdf.to_file(os.path.join(temp, "Concesiones_Rectangulos.shp"))
+        # Nombres cortos para evitar errores en ArcMap (máx 10 caracteres en DBF)
+        gdf.to_file(os.path.join(temp, "Concesion.shp"))
 
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w') as zf:
             for ex in ['.shp', '.shx', '.dbf', '.prj']:
-                zf.write(os.path.join(temp, f"Concesiones_Rectangulos{ex}"), arcname=f"Concesiones_Rectangulos{ex}")
-        st.download_button("🌍 Descargar Shapefile (ZIP)", zip_buf.getvalue(), "Concesiones_SHP.zip")
+                zf.write(os.path.join(temp, f"Concesion{ex}"), arcname=f"Concesion{ex}")
+        st.download_button("🌍 Descargar Shapefile Polígono", zip_buf.getvalue(), "Concesiones_300Ha.zip")
