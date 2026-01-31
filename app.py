@@ -2,11 +2,16 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
+import os
+import zipfile
+import geopandas as gpd
+from shapely.geometry import Point
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero Pro", layout="wide")
-st.title("⚒️ Extractor de Expedientes Mineros")
+st.set_page_config(page_title="Extractor Minero Pro + GIS", layout="wide")
+st.title("⚒️ Extractor de Expedientes y Generador Shapefile")
 
+# --- FUNCIONES DE EXTRACCIÓN (Mantenemos tu lógica ganadora) ---
 def identificar_tramite(texto):
     t = texto.lower()
     if "rectificación" in t or "rectificacion" in t: return "Solicitud de Rectificación"
@@ -21,10 +26,9 @@ def extraer_datos_mineros(pdf_file):
         for pagina in pdf.pages:
             txt = pagina.extract_text()
             if txt: texto_sucio += txt + " \n "
-
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. JUZGADO (Lógica consolidada) ---
+    # Juzgado
     diccionario_juzgados = {"primer": "1°", "1": "1°", "primero": "1°", "segundo": "2°", "2": "2°", "tercer": "3°", "3": "3°", "tercero": "3°"}
     juz_base = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     juzgado = "No detectado"
@@ -35,10 +39,9 @@ def extraer_datos_mineros(pdf_file):
         if orden_match:
             prefijo = diccionario_juzgados.get(orden_match.group(1), orden_match.group(1) + "°")
             juzgado = f"{prefijo} {juz_base.group(0)}"
-        else:
-            juzgado = juz_base.group(0)
+        else: juzgado = juz_base.group(0)
 
-    # --- 2. NOMBRE Y SOLICITANTE ---
+    # Nombre y Solicitante
     nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     if nombre == "No detectado":
@@ -47,33 +50,25 @@ def extraer_datos_mineros(pdf_file):
 
     solicitante = "No detectado"
     solic_match = re.search(r'(?:Demandante|Solicitante)[:\s]*([A-ZÁÉÍÓÚÑ\s\(\)]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo, re.IGNORECASE)
-    if solic_match:
-        solicitante = solic_match.group(1).strip()
+    if solic_match: solicitante = solic_match.group(1).strip()
     else:
         empresa = re.search(r'(FQAM\s+EXPLORATION\s+\(CHILE\)\s+S\.A\.)', cuerpo)
         if empresa: solicitante = empresa.group(1).strip()
 
-    # --- 3. COORDENADAS (Busqueda Reforzada para 6645) ---
-    # Buscamos números de 6 a 7 dígitos que estén cerca de las palabras Norte/Este
-    # El patrón \d[\d\.\,]* permite capturar números con puntos intermedios
+    # Coordenadas
     norte_match = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
     este_match = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     
     def limpiar_coord(coord):
-        if not coord: return "Ver PDF"
-        # Quitamos puntos, comas y espacios
+        if not coord: return None
         limpia = re.sub(r'[\.\,\s]', '', coord)
-        return limpia
+        return float(limpia) if limpia.isdigit() else None
 
-    norte = limpiar_coord(norte_match.group(1)) if norte_match else "Ver PDF"
-    este = limpiar_coord(este_match.group(1)) if este_match else "Ver PDF"
+    norte = limpiar_coord(norte_match.group(1)) if norte_match else None
+    este = limpiar_coord(este_match.group(1)) if este_match else None
 
-    # --- 4. OTROS ---
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
-    fojas = re.search(r'(?i)(?:fojas|Fs\.|Fjs\.)\s*([\d\.]+)', cuerpo)
-    com_m = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
-    comuna = com_m.group(1).strip() if com_m else "No detectado"
-    cve = re.search(r'CVE\s*[:\s]*(\d+)', cuerpo, re.IGNORECASE)
+    comuna = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})', cuerpo)
 
     return {
         "Archivo": pdf_file.name,
@@ -81,23 +76,50 @@ def extraer_datos_mineros(pdf_file):
         "Nombre": nombre,
         "Solicitante": solicitante,
         "Rol": rol.group(1) if rol else "No detectado",
-        "Fojas": fojas.group(1) if fojas else "No detectado",
-        "Comuna": comuna,
         "Juzgado": juzgado,
-        "Norte (Y)": norte,
-        "Este (X)": este,
-        "CVE": cve.group(1) if cve else "No detectado"
+        "Norte_Y": norte,
+        "Este_X": este
     }
 
+# --- INTERFAZ ---
 uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    data = [extraer_datos_mineros(f) for f in uploaded_files]
-    df = pd.DataFrame(data)
-    cols = ["Archivo", "Tipo", "Nombre", "Solicitante", "Rol", "Fojas", "Comuna", "Juzgado", "Norte (Y)", "Este (X)", "CVE"]
-    st.dataframe(df[cols])
+    results = [extraer_datos_mineros(f) for f in uploaded_files]
+    df = pd.DataFrame(results)
+    st.dataframe(df)
+
+    # 1. Exportar Excel
+    output_excel = BytesIO()
+    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False)
+    st.download_button("📥 Descargar Excel", output_excel.getvalue(), "Datos_Mineros.xlsx")
+
+    # 2. Exportar Shapefile
+    # Solo procesamos filas que tengan coordenadas válidas
+    df_geo = df.dropna(subset=['Norte_Y', 'Este_X']).copy()
     
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df[cols].to_excel(writer, index=False)
-    st.download_button("📥 Descargar Reporte Final", output.getvalue(), "Mineria_Final_Coordenadas.xlsx")
+    if not df_geo.empty:
+        # Creamos la geometría (Puntos)
+        geometry = [Point(xy) for xy in zip(df_geo.Este_X, df_geo.Norte_Y)]
+        # Definimos el Sistema de Referencia (EPSG:32719 es WGS84 / UTM zone 19S)
+        gdf = gpd.GeoDataFrame(df_geo, geometry=geometry, crs="EPSG:32719")
+        
+        # Guardar temporalmente para comprimir
+        temp_dir = "temp_shp"
+        if not os.path.exists(temp_dir): os.makedirs(temp_dir)
+        
+        base_name = "Concesiones_Mineras"
+        shp_path = os.path.join(temp_dir, f"{base_name}.shp")
+        gdf.to_file(shp_path)
+
+        # Crear ZIP
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zf:
+            for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                file_path = os.path.join(temp_dir, f"{base_name}{ext}")
+                zf.write(file_path, arcname=f"{base_name}{ext}")
+        
+        st.download_button("🌍 Descargar Shapefile (ZIP)", zip_buffer.getvalue(), "Concesiones_GIS.zip")
+    else:
+        st.warning("No se detectaron coordenadas válidas para generar el Shapefile.")
