@@ -22,42 +22,49 @@ def extraer_datos_mineros(pdf_file):
             txt = pagina.extract_text()
             if txt: texto_sucio += txt + " \n "
 
-    # Unimos todo en una sola línea para evitar que los saltos de página corten el Juzgado
+    # Normalizamos el texto quitando espacios extra
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. JUZGADO (Captura exacta del símbolo de grado) ---
-    # Esta expresión busca: un número (1-9) + el símbolo ° o º + la palabra Juzgado...
-    # El \s* permite que haya o no un espacio entre el símbolo y la palabra Juzgado.
-    juz_match = re.search(r'(\d+[°º]\s*Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z\s]+)', cuerpo)
+    # --- 1. JUZGADO (Lógica Robusta para el 1°, 2°, 3°) ---
+    # Buscamos la frase "Juzgado de Letras de..."
+    juz_base = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     
-    # Si por alguna razón el símbolo de grado no es reconocido, busca la frase base
-    if not juz_match:
-        juz_match = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z\s]+)', cuerpo, re.IGNORECASE)
-    
-    juzgado = juz_match.group(0).strip() if juz_match else "No detectado"
+    juzgado = "No detectado"
+    if juz_base:
+        # Si lo encuentra, miramos qué hay JUSTO antes (máximo 5 caracteres)
+        inicio_frase = juz_base.start()
+        prefijo = cuerpo[max(0, inicio_frase-5):inicio_frase].strip()
+        
+        # Extraemos solo el primer número que veamos (1, 2 o 3)
+        numero = re.search(r'(\d)', prefijo)
+        
+        if numero:
+            # Forzamos que aparezca con el símbolo ° que tú necesitas
+            juzgado = f"{numero.group(1)}° {juz_base.group(0)}"
+        else:
+            # Si no hay número cerca, dejamos la frase sola
+            juzgado = juz_base.group(0)
 
-    # --- 2. NOMBRE DE LA MINA Y SOLICITANTE (Ajuste para 6641) ---
-    # Buscamos mayúsculas entre comillas
+    # --- 2. NOMBRE DE LA MINA (Ajuste para el archivo 6641) ---
+    # Buscamos el nombre entre comillas
     nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     
-    # Si sigue sin detectar el nombre (como en 6641), buscamos el bloque después de S.J.L.
-    if nombre == "No detectado":
-        respaldo = re.search(r'S\.J\.L\.,?\s*([A-ZÁÉÍÓÚÑ\s]{5,50})', cuerpo)
-        if respaldo: nombre = respaldo.group(1).strip()
+    # Si sigue sin aparecer (caso 6641), buscamos el primer bloque de mayúsculas tras el Juzgado
+    if nombre == "No detectado" and juz_base:
+        pos_final_juzgado = juz_base.end()
+        mayusculas = re.search(r'([A-ZÁÉÍÓÚÑ\s]{5,40})', cuerpo[pos_final_juzgado:])
+        if mayusculas: nombre = mayusculas.group(1).strip()
 
-    # Solicitante: Mayúsculas largas antes de RUT/Cédula
-    solic_m = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|domiciliado))', cuerpo)
-    solicitante = solic_m.group(1).strip() if solic_m else "No detectado"
-
-    # --- 3. DATOS RESTANTES ---
+    # --- 3. SOLICITANTE, ROL Y COMUNA ---
+    solic = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo)
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
     fojas = re.search(r'(?i)(?:fojas|Fs\.|Fjs\.)\s*([\d\.]+)', cuerpo)
     
-    # Comuna completa (Las Condes, La Serena, etc.)
-    com_m = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
-    comuna = com_m.group(1).strip() if com_m else "No detectado"
+    com_match = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
+    comuna = com_match.group(1).strip() if com_match else "No detectado"
 
+    # --- 4. COORDENADAS ---
     tipo = identificar_tramite(cuerpo)
     norte = re.search(r'Norte[:\s]*([\d\.]{7,10})', cuerpo, re.IGNORECASE)
     este = re.search(r'Este[:\s]*([\d\.]{6,9})', cuerpo, re.IGNORECASE)
@@ -67,7 +74,7 @@ def extraer_datos_mineros(pdf_file):
         "Archivo": pdf_file.name,
         "Tipo": tipo,
         "Nombre Mina": nombre,
-        "Solicitante": solicitante,
+        "Solicitante": solic.group(1).strip() if solic else "No detectado",
         "Rol": rol.group(1) if rol else "No detectado",
         "Fojas": fojas.group(1) if fojas else "No detectado",
         "Comuna": comuna,
@@ -88,4 +95,4 @@ if uploaded_files:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df[cols].to_excel(writer, index=False)
-    st.download_button("📥 Descargar Reporte", output.getvalue(), "Mineria_Final.xlsx")
+    st.download_button("📥 Descargar Reporte Final", output.getvalue(), "Reporte_Mineria.xlsx")
