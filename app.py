@@ -24,8 +24,7 @@ def extraer_datos_mineros(pdf_file):
 
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. JUZGADO (Traductor de Orden: Números y Palabras) ---
-    # Diccionario de traducción para estandarizar el formato
+    # --- 1. JUZGADO (Filtro para palabras específicas y números limpios) ---
     diccionario_juzgados = {
         "primer": "1°", "1": "1°", "primero": "1°",
         "segundo": "2°", "2": "2°",
@@ -39,14 +38,16 @@ def extraer_datos_mineros(pdf_file):
 
     if juz_base:
         pos = juz_base.start()
-        # Escaneamos un poco antes del texto para pillar el número o la palabra
-        fragmento = cuerpo[max(0, pos-15):pos].lower().strip()
-        # Buscamos un dígito o una palabra de orden
-        orden_match = re.search(r'(\d+|primer|segundo|tercer|cuarto|quinto)', fragmento)
+        # Escaneamos el fragmento anterior
+        fragmento = cuerpo[max(0, pos-20):pos].lower().strip()
+        
+        # BUSQUEDA SELECTIVA: Solo palabras clave o números de un solo dígito
+        # Esto ignorará el "002" porque buscamos la palabra 'tercer' o un número solo
+        orden_match = re.search(r'\b(primer|segundo|tercer|cuarto|quinto|1|2|3|4|5)\b', fragmento)
         
         if orden_match:
-            valor_encontrado = orden_match.group(1)
-            prefijo = diccionario_juzgados.get(valor_encontrado, valor_encontrado + "°")
+            valor = orden_match.group(1)
+            prefijo = diccionario_juzgados.get(valor, valor + "°")
             juzgado = f"{prefijo} {juz_base.group(0)}"
         else:
             juzgado = juz_base.group(0)
@@ -55,7 +56,6 @@ def extraer_datos_mineros(pdf_file):
     nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     
-    # Rescate para nombres sin comillas (como el FQM E que ya detectamos)
     if nombre == "No detectado":
         respaldo = re.search(r'(?:denominada|pertenencia|mina)\s+([A-ZÁÉÍÓÚÑ\s]{3,40})', cuerpo, re.IGNORECASE)
         if respaldo: nombre = respaldo.group(1).strip()
