@@ -24,27 +24,18 @@ def extraer_datos_mineros(pdf_file):
 
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- 1. JUZGADO (Filtro para palabras específicas y números limpios) ---
+    # --- 1. JUZGADO (Traducción limpia de 1°, 2°, 3°) ---
     diccionario_juzgados = {
         "primer": "1°", "1": "1°", "primero": "1°",
         "segundo": "2°", "2": "2°",
-        "tercer": "3°", "3": "3°", "tercero": "3°",
-        "cuarto": "4°", "4": "4°",
-        "quinto": "5°", "5": "5°"
+        "tercer": "3°", "3": "3°", "tercero": "3°"
     }
-
     juz_base = re.search(r'(Juzgado\s+de\s+Letras\s+de\s+[A-ZÁÉÍÓÚÑa-z]+)', cuerpo, re.IGNORECASE)
     juzgado = "No detectado"
-
     if juz_base:
         pos = juz_base.start()
-        # Escaneamos el fragmento anterior
         fragmento = cuerpo[max(0, pos-20):pos].lower().strip()
-        
-        # BUSQUEDA SELECTIVA: Solo palabras clave o números de un solo dígito
-        # Esto ignorará el "002" porque buscamos la palabra 'tercer' o un número solo
-        orden_match = re.search(r'\b(primer|segundo|tercer|cuarto|quinto|1|2|3|4|5)\b', fragmento)
-        
+        orden_match = re.search(r'\b(primer|segundo|tercer|1|2|3)\b', fragmento)
         if orden_match:
             valor = orden_match.group(1)
             prefijo = diccionario_juzgados.get(valor, valor + "°")
@@ -52,39 +43,45 @@ def extraer_datos_mineros(pdf_file):
         else:
             juzgado = juz_base.group(0)
 
-    # --- 2. NOMBRE DE LA MINA Y SOLICITANTE ---
+    # --- 2. NOMBRE (Ajuste específico para SETH 3-A) ---
+    # Buscamos patrones como "SETH 3-A" o texto entre comillas
     nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
     nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     
     if nombre == "No detectado":
-        respaldo = re.search(r'(?:denominada|pertenencia|mina)\s+([A-ZÁÉÍÓÚÑ\s]{3,40})', cuerpo, re.IGNORECASE)
-        if respaldo: nombre = respaldo.group(1).strip()
+        # Buscamos específicamente nombres con guiones y números como SETH 3-A
+        especifico = re.search(r'\b([A-Z]{3,}\s\d+\-[A-Z])\b', cuerpo)
+        if especifico: nombre = especifico.group(1).strip()
 
-    solic_m = re.search(r'([A-ZÁÉÍÓÚÑ\s]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado|domiciliado))', cuerpo)
-    solicitante = solic_m.group(1).strip() if solic_m else "No detectado"
+    # --- 3. SOLICITANTE (Ajuste para FQAM EXPLORATION / Demandante) ---
+    # Buscamos después de la palabra 'Demandante' o antes de 'RUT'
+    solicitante = "No detectado"
+    solic_match = re.search(r'(?:Demandante|Solicitante)[:\s]*([A-ZÁÉÍÓÚÑ\s\(\)]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo, re.IGNORECASE)
+    
+    if solic_match:
+        solicitante = solic_match.group(1).strip()
+    else:
+        # Intento directo por nombre de la empresa si el patrón falla
+        empresa = re.search(r'(FQAM\s+EXPLORATION\s+\(CHILE\)\s+S\.A\.)', cuerpo)
+        if empresa: solicitante = empresa.group(1).strip()
 
-    # --- 3. RESTO DE CAMPOS ---
+    # --- 4. OTROS CAMPOS ---
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
     fojas = re.search(r'(?i)(?:fojas|Fs\.|Fjs\.)\s*([\d\.]+)', cuerpo)
     com_m = re.search(r'(?i)comuna\s+de\s+([A-ZÁÉÍÓÚÑa-z\s]{3,25})(?=\s*[\.\,]| R\.U\.T| fjs| juzgado)', cuerpo)
     comuna = com_m.group(1).strip() if com_m else "No detectado"
-
     tipo = identificar_tramite(cuerpo)
-    norte = re.search(r'Norte[:\s]*([\d\.]{7,10})', cuerpo, re.IGNORECASE)
-    este = re.search(r'Este[:\s]*([\d\.]{6,9})', cuerpo, re.IGNORECASE)
     cve = re.search(r'CVE\s*[:\s]*(\d+)', cuerpo, re.IGNORECASE)
 
     return {
         "Archivo": pdf_file.name,
         "Tipo": tipo,
-        "Nombre Mina": nombre,
+        "Nombre": nombre,
         "Solicitante": solicitante,
         "Rol": rol.group(1) if rol else "No detectado",
         "Fojas": fojas.group(1) if fojas else "No detectado",
         "Comuna": comuna,
         "Juzgado": juzgado,
-        "Norte (Y)": norte.group(1).replace(".", "") if norte else "Ver PDF",
-        "Este (X)": este.group(1).replace(".", "") if este else "Ver PDF",
         "CVE": cve.group(1) if cve else "No detectado"
     }
 
@@ -93,10 +90,11 @@ uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_f
 if uploaded_files:
     data = [extraer_datos_mineros(f) for f in uploaded_files]
     df = pd.DataFrame(data)
-    cols = ["Archivo", "Tipo", "Nombre Mina", "Solicitante", "Rol", "Fojas", "Comuna", "Juzgado", "Norte (Y)", "Este (X)", "CVE"]
+    # Cambiamos el orden y nombre de la columna a "Nombre"
+    cols = ["Archivo", "Tipo", "Nombre", "Solicitante", "Rol", "Fojas", "Comuna", "Juzgado", "CVE"]
     st.dataframe(df[cols])
     
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df[cols].to_excel(writer, index=False)
-    st.download_button("📥 Descargar Reporte Final", output.getvalue(), "Mineria_Reporte.xlsx")
+    st.download_button("📥 Descargar Reporte Corregido", output.getvalue(), "Mineria_Reporte_Final.xlsx")
