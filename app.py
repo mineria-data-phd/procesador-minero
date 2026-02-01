@@ -8,15 +8,15 @@ import geopandas as gpd
 from shapely.geometry import Polygon
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero Final", layout="wide")
-st.title("⚒️ Generador de Polígonos para ArcMap 10.8")
+st.set_page_config(page_title="Extractor Minero Definitivo", layout="wide")
+st.title("⚒️ Generador de Concesiones para ArcMap 10.8")
 
 def identificar_tramite(texto):
     t = texto.lower()
     if any(x in t for x in ["rectificación", "rectificacion"]): return "Solicitud de Rectificación"
     if any(x in t for x in ["mensura"]): return "Solicitud de Mensura"
     if any(x in t for x in ["pedimento", "manifestación", "manifestacion"]): return "Manifestación y Pedimento"
-    return "Extracto EM y EP"
+    return "Extracto Minero"
 
 def extraer_datos_mineros(pdf_file):
     texto_sucio = ""
@@ -39,10 +39,11 @@ def extraer_datos_mineros(pdf_file):
 
     v = {}
     if x_c and y_c:
-        v['V1_X'], v['V1_Y'] = x_c - 1500, y_c + 500
-        v['V2_X'], v['V2_Y'] = x_c + 1500, y_c + 500
-        v['V3_X'], v['V3_Y'] = x_c + 1500, y_c - 500
-        v['V4_X'], v['V4_Y'] = x_c - 1500, y_c - 500
+        # Vértices con redondeo para evitar errores de precisión en ArcMap
+        v['V1_X'], v['V1_Y'] = round(x_c - 1500), round(y_c + 500)
+        v['V2_X'], v['V2_Y'] = round(x_c + 1500), round(y_c + 500)
+        v['V3_X'], v['V3_Y'] = round(x_c + 1500), round(y_c - 500)
+        v['V4_X'], v['V4_Y'] = round(x_c - 1500), round(y_c - 500)
     else:
         for i in range(1, 5): v[f'V{i}_X'] = v[f'V{i}_Y'] = None
 
@@ -53,10 +54,9 @@ def extraer_datos_mineros(pdf_file):
     return {
         "Archivo": pdf_file.name,
         "Nombre": nombre_m.group(1).strip() if nombre_m else "No detectado",
-        "Solicitante": solic_match.group(1).strip() if solic_match else "No detectado",
+        "Solicitant": solic_match.group(1).strip()[:10] if solic_match else "No detectado",
         "Rol": rol.group(1) if rol else "No detectado",
         "Tipo": identificar_tramite(cuerpo),
-        "Has": 300,
         **v
     }
 
@@ -67,34 +67,35 @@ if uploaded_files:
     df = pd.DataFrame(data)
     st.dataframe(df)
 
+    # 1. EXCEL
     out_ex = BytesIO()
     with pd.ExcelWriter(out_ex, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False)
-    st.download_button("📥 Descargar Tabla Excel", out_ex.getvalue(), "Datos_Mineros.xlsx")
+    st.download_button("📥 Descargar Tabla Excel", out_ex.getvalue(), "Reporte_Mineria.xlsx")
 
+    # 2. SHAPEFILE
     df_geo = df.dropna(subset=['V1_X', 'V1_Y']).copy()
     if not df_geo.empty:
         geometrias = []
         for _, r in df_geo.iterrows():
-            # Construcción exacta que te funcionó manual: 4 puntos + cierre
+            # El orden horario V1->V2->V3->V4->V1 que validaste manualmente
             puntos = [(r.V1_X, r.V1_Y), (r.V2_X, r.V2_Y), (r.V3_X, r.V3_Y), (r.V4_X, r.V4_Y), (r.V1_X, r.V1_Y)]
             geometrias.append(Polygon(puntos))
         
         gdf = gpd.GeoDataFrame(df_geo, geometry=geometrias, crs="EPSG:32719")
         
-        # Eliminamos coordenadas de la tabla y acortamos nombres para ArcMap
+        # Eliminamos vértices de la tabla de atributos para el SHP
         gdf = gdf.drop(columns=['V1_X', 'V1_Y', 'V2_X', 'V2_Y', 'V3_X', 'V3_Y', 'V4_X', 'V4_Y'])
-        gdf.columns = ['File', 'Nom_Conces', 'Solicitant', 'Rol_Exp', 'Tramite', 'Hectareas', 'geometry']
         
         temp = "temp_shp"
         if not os.path.exists(temp): os.makedirs(temp)
         
-        base_name = "Concesion_ArcMap"
-        # Usamos el driver estándar 'ESRI Shapefile' que es el más compatible
+        base_name = "Concesion"
+        # Exportación con driver ESRI y forzando esquema plano
         gdf.to_file(os.path.join(temp, f"{base_name}.shp"), driver='ESRI Shapefile')
 
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w') as zf:
             for ex in ['.shp', '.shx', '.dbf', '.prj']:
                 zf.write(os.path.join(temp, f"{base_name}{ex}"), arcname=f"{base_name}{ex}")
-        st.download_button("🌍 Descargar Shapefile Polígono", zip_buf.getvalue(), "Concesion_SHP.zip")
+        st.download_button("🌍 Descargar Shapefile (Estabilidad Pro)", zip_buf.getvalue(), "Concesion_ArcMap_Final.zip")
