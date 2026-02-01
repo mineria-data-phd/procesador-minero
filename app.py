@@ -8,15 +8,8 @@ import geopandas as gpd
 from shapely.geometry import Polygon
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero Pro", layout="wide")
-st.title("⚒️ Extractor: Excel Global y SHP Individuales para ArcMap")
-
-def identificar_tramite(texto):
-    t = texto.lower()
-    if any(x in t for x in ["rectificación", "rectificacion"]): return "Rectificacion"
-    if "mensura" in t: return "Mensura"
-    if any(x in t for x in ["pedimento", "manifestación", "manifestacion"]): return "Pedimento"
-    return "Extracto"
+st.set_page_config(page_title="Extractor de Fichas Mineras", layout="wide")
+st.title("⚒️ Extractor de Expedientes para Fichas y ArcMap")
 
 def extraer_datos_mineros(pdf_file):
     texto_sucio = ""
@@ -26,7 +19,22 @@ def extraer_datos_mineros(pdf_file):
             if txt: texto_sucio += txt + " \n "
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- Coordenadas Punto Medio ---
+    # --- Diccionario de búsqueda con lógica de las imágenes proporcionadas ---
+    
+    # 1. Identificación básica
+    rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
+    nombre = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
+    juzgado = re.search(r'(?i)(?:Letras|Juzgado)[:\s]+([\w\sº\.]+?)(?=\s*,|\s+de\s+\d)', cuerpo)
+    comuna = re.search(r'(?i)comuna\s+de\s+([\w\s]+?)(?=\s*,|\s+provincia)', cuerpo)
+    
+    # 2. Solicitante y Conservador
+    solicitante = re.search(r'(?i)(?:Demandante|Solicitante)[:\s]*([A-ZÁÉÍÓÚÑ\s\(\)]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo)
+    conservador = re.search(r'(?i)Conservador\s+de\s+Bienes\s+Raíces\s+de\s+([\w\s]+)', cuerpo)
+
+    # 3. Fechas (Presentación, Publicación, Sentencia)
+    fechas = re.findall(r'(\d{1,2}\s+de\s+[a-zñ]+\s+de\s+\d{4})', cuerpo.lower())
+    
+    # 4. Coordenadas UTM (Punto Medio para el cálculo)
     e_m = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     n_m = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
     
@@ -38,79 +46,69 @@ def extraer_datos_mineros(pdf_file):
     x_c = limpiar_coord(e_m.group(1)) if e_m else None
     y_c = limpiar_coord(n_m.group(1)) if n_m else None
 
-    # --- Vértices para Excel ---
+    # --- Construcción del registro ---
+    nombre_raw = nombre.group(1).strip() if nombre else "Sin Nombre"
+    nombre_id = re.sub(r'[^a-zA-Z0-9]', '_', nombre_raw)[:20]
+
     v = {}
-    poligono = None
+    poly = None
     if x_c and y_c:
         v['V1_X'], v['V1_Y'] = round(x_c - 1500), round(y_c + 500)
         v['V2_X'], v['V2_Y'] = round(x_c + 1500), round(y_c + 500)
         v['V3_X'], v['V3_Y'] = round(x_c + 1500), round(y_c - 500)
         v['V4_X'], v['V4_Y'] = round(x_c - 1500), round(y_c - 500)
-        # Crear polígono para el SHP
-        poligono = Polygon([(v['V1_X'], v['V1_Y']), (v['V2_X'], v['V2_Y']), 
-                            (v['V3_X'], v['V3_Y']), (v['V4_X'], v['V4_Y']), 
-                            (v['V1_X'], v['V1_Y'])])
-    else:
-        for i in range(1, 5): v[f'V{i}_X'] = v[f'V{i}_Y'] = None
+        poly = Polygon([(v['V1_X'], v['V1_Y']), (v['V2_X'], v['V2_Y']), (v['V3_X'], v['V3_Y']), (v['V4_X'], v['V4_Y']), (v['V1_X'], v['V1_Y'])])
 
-    # --- Metadatos ---
-    nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
-    nombre_raw = nombre_m.group(1).strip() if nombre_m else "Sin_Nombre"
-    nombre_archivo = re.sub(r'[^a-zA-Z0-9]', '_', nombre_raw)[:20]
-    
-    rol_match = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
-    
-    res = {
-        "Nombre_ID": nombre_archivo,
+    row = {
+        "Nombre_ID": nombre_id,
         "Nombre": nombre_raw,
-        "Rol": rol_match.group(1) if rol_match else "S/R",
-        "Tipo": identificar_tramite(cuerpo),
-        "Hectareas": 300
+        "Rol": rol.group(1) if rol else "S/R",
+        "Juzgado": juzgado.group(1).strip() if juzgado else "No detectado",
+        "Comuna": comuna.group(1).strip() if comuna else "No detectada",
+        "Solicitante": solicitante.group(1).strip() if solicitante else "No detectado",
+        "Conservador": conservador.group(1).strip() if conservador else "No detectado",
+        "Fecha_1": fechas[0] if len(fechas) > 0 else "",
+        "Fecha_2": fechas[1] if len(fechas) > 1 else "",
+        "Hectareas": 300,
+        "Este_Medio": x_c,
+        "Norte_Medio": y_c,
+        **v
     }
-    res.update(v)
-    return res, poligono
+    return row, poly
 
 uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    data_list = []
-    geometrias = {}
+    all_data = []
+    shapes = {}
     
     for f in uploaded_files:
-        datos, poly = extraer_datos_mineros(f)
-        data_list.append(datos)
-        if poly:
-            geometrias[datos['Nombre_ID']] = (poly, datos)
+        info, poly = extraer_datos_mineros(f)
+        all_data.append(info)
+        if poly: shapes[info['Nombre_ID']] = (poly, info)
 
-    df = pd.DataFrame(data_list)
-    st.write("### Vista previa de datos")
+    df = pd.DataFrame(all_data)
+    st.write("### Datos Extraídos para Fichas")
     st.dataframe(df)
 
-    # 1. GENERAR EXCEL GLOBAL
-    output_excel = BytesIO()
-    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+    # 1. EXCEL GLOBAL (Todos los campos de las imágenes)
+    out_ex = BytesIO()
+    with pd.ExcelWriter(out_ex, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False)
-    st.download_button("📥 Descargar Excel Global", output_excel.getvalue(), "Reporte_Completo.xlsx")
+    st.download_button("📥 Descargar Excel para Fichas", out_ex.getvalue(), "Fichas_Mineras.xlsx")
 
-    # 2. GENERAR ZIP CON SHPs INDIVIDUALES
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        temp_dir = "temp_shp"
-        if not os.path.exists(temp_dir): os.makedirs(temp_dir)
-
-        for nombre_id, (poly, info) in geometrias.items():
-            # Crear GeoDataFrame individual
-            gdf = gpd.GeoDataFrame([info], geometry=[poly], crs="EPSG:32719")
-            # Limpiar para ArcMap (quitar columnas X/Y y Nombre_ID)
-            gdf_clean = gdf.drop(columns=['Nombre_ID', 'V1_X', 'V1_Y', 'V2_X', 'V2_Y', 'V3_X', 'V3_Y', 'V4_X', 'V4_Y'])
-            
-            # Nombre de archivo único
-            path_base = os.path.join(temp_dir, nombre_id)
-            gdf_clean.to_file(f"{path_base}.shp", driver='ESRI Shapefile')
-
-            # Agregar los 4 componentes al ZIP
+    # 2. ZIP DE SHAPEFILES INDIVIDUALES
+    zip_buf = BytesIO()
+    with zipfile.ZipFile(zip_buf, 'w') as zf:
+        temp = "temp_shp"
+        if not os.path.exists(temp): os.makedirs(temp)
+        for nid, (p, data) in shapes.items():
+            gdf = gpd.GeoDataFrame([data], geometry=[p], crs="EPSG:32719")
+            # Limpiar columnas para que no rompa el DBF de ArcMap
+            gdf_clean = gdf[['Nombre', 'Rol', 'Juzgado', 'geometry']]
+            path = os.path.join(temp, nid)
+            gdf_clean.to_file(f"{path}.shp", driver='ESRI Shapefile')
             for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                if os.path.exists(f"{path_base}{ext}"):
-                    zf.write(f"{path_base}{ext}", arcname=f"{nombre_id}/{nombre_id}{ext}")
+                zf.write(f"{path}{ext}", arcname=f"{nid}/{nid}{ext}")
 
-    st.download_button("🌍 Descargar Shapefiles Individuales (ZIP)", zip_buffer.getvalue(), "Concesiones_ArcMap.zip")
+    st.download_button("🌍 Descargar SHPs Individuales (ZIP)", zip_buf.getvalue(), "Planos_ArcMap.zip")
