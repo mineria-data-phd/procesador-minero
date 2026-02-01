@@ -8,8 +8,8 @@ import geopandas as gpd
 from shapely.geometry import Polygon
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero Individual", layout="wide")
-st.title("⚒️ Generador de Shapefiles Individuales (1 por Expediente)")
+st.set_page_config(page_title="Extractor Minero Pro", layout="wide")
+st.title("⚒️ Extractor: Excel Global y SHP Individuales para ArcMap")
 
 def identificar_tramite(texto):
     t = texto.lower()
@@ -26,7 +26,7 @@ def extraer_datos_mineros(pdf_file):
             if txt: texto_sucio += txt + " \n "
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- Coordenadas ---
+    # --- Coordenadas Punto Medio ---
     e_m = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     n_m = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
     
@@ -38,76 +38,79 @@ def extraer_datos_mineros(pdf_file):
     x_c = limpiar_coord(e_m.group(1)) if e_m else None
     y_c = limpiar_coord(n_m.group(1)) if n_m else None
 
-    # --- Nombre y Rol ---
-    nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
-    nombre_raw = nombre_m.group(1).strip() if nombre_m else "Sin_Nombre"
-    # Limpiar nombre para que sea un nombre de archivo válido
-    nombre_limpio = re.sub(r'[^a-zA-Z0-9]', '_', nombre_raw)[:20]
-    
-    rol_match = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
-    rol = rol_match.group(1) if rol_match else "S_R"
-
-    # --- Geometría ---
+    # --- Vértices para Excel ---
+    v = {}
     poligono = None
     if x_c and y_c:
-        # V1->V2->V3->V4->V1 (Sentido horario y cierre)
-        coords = [
-            (x_c - 1500, y_c + 500),
-            (x_c + 1500, y_c + 500),
-            (x_c + 1500, y_c - 500),
-            (x_c - 1500, y_c - 500),
-            (x_c - 1500, y_c + 500)
-        ]
-        poligono = Polygon(coords)
+        v['V1_X'], v['V1_Y'] = round(x_c - 1500), round(y_c + 500)
+        v['V2_X'], v['V2_Y'] = round(x_c + 1500), round(y_c + 500)
+        v['V3_X'], v['V3_Y'] = round(x_c + 1500), round(y_c - 500)
+        v['V4_X'], v['V4_Y'] = round(x_c - 1500), round(y_c - 500)
+        # Crear polígono para el SHP
+        poligono = Polygon([(v['V1_X'], v['V1_Y']), (v['V2_X'], v['V2_Y']), 
+                            (v['V3_X'], v['V3_Y']), (v['V4_X'], v['V4_Y']), 
+                            (v['V1_X'], v['V1_Y'])])
+    else:
+        for i in range(1, 5): v[f'V{i}_X'] = v[f'V{i}_Y'] = None
 
-    return {
-        "Nombre_Arch": nombre_limpio,
-        "Nombre_Real": nombre_raw,
-        "Rol": rol,
+    # --- Metadatos ---
+    nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
+    nombre_raw = nombre_m.group(1).strip() if nombre_m else "Sin_Nombre"
+    nombre_archivo = re.sub(r'[^a-zA-Z0-9]', '_', nombre_raw)[:20]
+    
+    rol_match = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
+    
+    res = {
+        "Nombre_ID": nombre_archivo,
+        "Nombre": nombre_raw,
+        "Rol": rol_match.group(1) if rol_match else "S/R",
         "Tipo": identificar_tramite(cuerpo),
-        "Geometria": poligono
+        "Hectareas": 300
     }
+    res.update(v)
+    return res, poligono
 
 uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    resultados = [extraer_datos_mineros(f) for f in uploaded_files]
-    df_base = pd.DataFrame(resultados)
-    st.write("Expedientes procesados:")
-    st.dataframe(df_base.drop(columns=["Geometria"]))
+    data_list = []
+    geometrias = {}
+    
+    for f in uploaded_files:
+        datos, poly = extraer_datos_mineros(f)
+        data_list.append(datos)
+        if poly:
+            geometrias[datos['Nombre_ID']] = (poly, datos)
 
-    # Crear el ZIP con archivos individuales
+    df = pd.DataFrame(data_list)
+    st.write("### Vista previa de datos")
+    st.dataframe(df)
+
+    # 1. GENERAR EXCEL GLOBAL
+    output_excel = BytesIO()
+    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False)
+    st.download_button("📥 Descargar Excel Global", output_excel.getvalue(), "Reporte_Completo.xlsx")
+
+    # 2. GENERAR ZIP CON SHPs INDIVIDUALES
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
-        temp_dir = "temp_individual"
+        temp_dir = "temp_shp"
         if not os.path.exists(temp_dir): os.makedirs(temp_dir)
 
-        for index, row in df_base.iterrows():
-            if row['Geometria']:
-                # Crear GeoDataFrame para este expediente único
-                gdf_individual = gpd.GeoDataFrame(
-                    [row], 
-                    geometry=[row['Geometria']], 
-                    crs="EPSG:32719"
-                )
-                # Limpiar columnas para el DBF
-                gdf_shp = gdf_individual.drop(columns=["Geometria", "Nombre_Arch"])
-                gdf_shp.columns = ['Nombre', 'Rol', 'Tipo', 'geometry']
+        for nombre_id, (poly, info) in geometrias.items():
+            # Crear GeoDataFrame individual
+            gdf = gpd.GeoDataFrame([info], geometry=[poly], crs="EPSG:32719")
+            # Limpiar para ArcMap (quitar columnas X/Y y Nombre_ID)
+            gdf_clean = gdf.drop(columns=['Nombre_ID', 'V1_X', 'V1_Y', 'V2_X', 'V2_Y', 'V3_X', 'V3_Y', 'V4_X', 'V4_Y'])
+            
+            # Nombre de archivo único
+            path_base = os.path.join(temp_dir, nombre_id)
+            gdf_clean.to_file(f"{path_base}.shp", driver='ESRI Shapefile')
 
-                # Guardar temporalmente
-                base_name = f"{row['Nombre_Arch']}_{index}"
-                path_base = os.path.join(temp_dir, base_name)
-                gdf_shp.to_file(f"{path_base}.shp", driver='ESRI Shapefile')
+            # Agregar los 4 componentes al ZIP
+            for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                if os.path.exists(f"{path_base}{ext}"):
+                    zf.write(f"{path_base}{ext}", arcname=f"{nombre_id}/{nombre_id}{ext}")
 
-                # Agregar al ZIP todas las extensiones del Shapefile
-                for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                    file_path = f"{path_base}{ext}"
-                    if os.path.exists(file_path):
-                        zf.write(file_path, arcname=f"{row['Nombre_Arch']}/{base_name}{ext}")
-
-    st.download_button(
-        label="📥 Descargar todos los Shapefiles (1 por carpeta)",
-        data=zip_buffer.getvalue(),
-        file_name="Concesiones_Individuales.zip",
-        mime="application/zip"
-    )
+    st.download_button("🌍 Descargar Shapefiles Individuales (ZIP)", zip_buffer.getvalue(), "Concesiones_ArcMap.zip")
