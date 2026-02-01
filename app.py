@@ -5,18 +5,11 @@ import re
 import os
 import zipfile
 import geopandas as gpd
-from shapely.geometry import Polygon
+from shapely.geometry import Point
 from io import BytesIO
 
-st.set_page_config(page_title="Extractor Minero ArcMap Pro", layout="wide")
-st.title("⚒️ Generador de Polígonos con Extensión Corregida")
-
-def identificar_tramite(texto):
-    t = texto.lower()
-    if any(x in t for x in ["rectificación", "rectificacion"]): return "Solicitud de Rectificación"
-    if "mensura" in t: return "Solicitud de Mensura"
-    if any(x in t for x in ["pedimento", "manifestación", "manifestacion"]): return "Manifestación y Pedimento"
-    return "Extracto Minero"
+st.set_page_config(page_title="Extractor de Vértices Pro", layout="wide")
+st.title("⚒️ Generador de Vértices para Reconstrucción en ArcMap")
 
 def extraer_datos_mineros(pdf_file):
     texto_sucio = ""
@@ -26,7 +19,6 @@ def extraer_datos_mineros(pdf_file):
             if txt: texto_sucio += txt + " \n "
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # Coordenadas Punto Medio
     e_m = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     n_m = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
     
@@ -38,71 +30,58 @@ def extraer_datos_mineros(pdf_file):
     x_c = limpiar_coord(e_m.group(1)) if e_m else None
     y_c = limpiar_coord(n_m.group(1)) if n_m else None
 
-    v = {}
-    if x_c and y_c:
-        # Redondeo para evitar errores de precisión en el Bounding Box de ArcMap
-        v['V1_X'], v['V1_Y'] = round(x_c - 1500), round(y_c + 500)
-        v['V2_X'], v['V2_Y'] = round(x_c + 1500), round(y_c + 500)
-        v['V3_X'], v['V3_Y'] = round(x_c + 1500), round(y_c - 500)
-        v['V4_X'], v['V4_Y'] = round(x_c - 1500), round(y_c - 500)
-    else:
-        for i in range(1, 5): v[f'V{i}_X'] = v[f'V{i}_Y'] = None
-
+    # Extraer metadatos
     nombre_m = re.search(r'[\"“]([A-ZÁÉÍÓÚÑ\d\s\-]{3,50})[\"”]', cuerpo)
-    solic_match = re.search(r'(?:Demandante|Solicitante)[:\s]*([A-ZÁÉÍÓÚÑ\s\(\)]{10,80})(?=\s*,?\s*(?:cédula|R\.U\.T|RUT|abogado))', cuerpo, re.IGNORECASE)
+    nombre = nombre_m.group(1).strip() if nombre_m else "No detectado"
     rol = re.search(r'([A-Z]-\d+-\d{4})', cuerpo)
 
-    return {
-        "Archivo": pdf_file.name,
-        "Nombre": nombre_m.group(1).strip() if nombre_m else "No detectado",
-        "Solicit": solic_match.group(1).strip()[:10] if solic_match else "No detectado",
-        "Rol": rol.group(1) if rol else "No detectado",
-        "Tipo": identificar_tramite(cuerpo),
-        **v
-    }
+    vertices_list = []
+    if x_c and y_c:
+        # Creamos los 5 puntos (incluyendo el de cierre) para que ArcMap los una fácil
+        coords = [
+            (x_c - 1500, y_c + 500, 1), # V1
+            (x_c + 1500, y_c + 500, 2), # V2
+            (x_c + 1500, y_c - 500, 3), # V3
+            (x_c - 1500, y_c - 500, 4), # V4
+            (x_c - 1500, y_c + 500, 5)  # Cierre (V1 otra vez)
+        ]
+        
+        for vx, vy, orden in coords:
+            vertices_list.append({
+                "Nombre": nombre,
+                "Rol": rol.group(1) if rol else "S/R",
+                "Orden": orden,
+                "X": round(vx),
+                "Y": round(vy)
+            })
+    
+    return vertices_list
 
 uploaded_files = st.file_uploader("Sube tus PDFs", type="pdf", accept_multiple_files=True)
 
 if uploaded_files:
-    data = [extraer_datos_mineros(f) for f in uploaded_files]
-    df = pd.DataFrame(data)
+    all_vertices = []
+    for f in uploaded_files:
+        all_vertices.extend(extraer_datos_mineros(f))
+    
+    df = pd.DataFrame(all_vertices)
+    st.write("Vista de los puntos (V1 a V5):")
     st.dataframe(df)
 
-    # Excel
-    out_ex = BytesIO()
-    with pd.ExcelWriter(out_ex, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False)
-    st.download_button("📥 Descargar Tabla Excel", out_ex.getvalue(), "Datos_Mineria.xlsx")
-
-    # Shapefile
-    df_geo = df.dropna(subset=['V1_X', 'V1_Y']).copy()
-    if not df_geo.empty:
-        geometrias = []
-        for _, r in df_geo.iterrows():
-            # Sentido horario + Cierre (Manual)
-            coords = [(r.V1_X, r.V1_Y), (r.V2_X, r.V2_Y), (r.V3_X, r.V3_Y), (r.V4_X, r.V4_Y), (r.V1_X, r.V1_Y)]
-            geometrias.append(Polygon(coords))
-        
-        gdf = gpd.GeoDataFrame(df_geo, geometry=geometrias, crs="EPSG:32719")
-        
-        # --- PASO CRÍTICO PARA ARCMAP ---
-        # 1. Asegurar que no existan geometrías vacías
-        gdf = gdf[gdf.is_valid]
-        # 2. Eliminar columnas que no sean compatibles con DBF (nombres largos)
-        gdf = gdf.drop(columns=['V1_X', 'V1_Y', 'V2_X', 'V2_Y', 'V3_X', 'V3_Y', 'V4_X', 'V4_Y'])
+    # SHAPEFILE DE PUNTOS
+    if not df.empty:
+        geometry = [Point(xy) for xy in zip(df.X, df.Y)]
+        gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:32719")
         
         temp = "temp_shp"
         if not os.path.exists(temp): os.makedirs(temp)
         
-        base_name = "Concesion"
-        path = os.path.join(temp, base_name)
-        
-        # Guardar con driver explícito
-        gdf.to_file(f"{path}.shp", driver='ESRI Shapefile')
+        base_name = "Vertices_Control"
+        gdf.to_file(os.path.join(temp, f"{base_name}.shp"), driver='ESRI Shapefile')
 
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w') as zf:
             for ex in ['.shp', '.shx', '.dbf', '.prj']:
-                zf.write(f"{path}{ex}", arcname=f"{base_name}{ex}")
+                zf.write(os.path.join(temp, f"{base_name}{ex}"), arcname=f"{base_name}{ex}")
         
-        st.download_button("🌍 Descargar SHP (Zoom Corregido)", zip_buf.getvalue(), "Concesion_ArcMap.zip")
+        st.download_button("🌍 Descargar Puntos para ArcMap", zip_buf.getvalue(), "Vertices_ArcMap.zip")
