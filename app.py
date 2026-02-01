@@ -9,7 +9,7 @@ from shapely.geometry import Polygon
 from io import BytesIO
 
 st.set_page_config(page_title="Extractor Minero ArcMap Pro", layout="wide")
-st.title("⚒️ Generador de Polígonos SHP para ArcMap 10.8")
+st.title("⚒️ Generador de Polígonos con Extensión Corregida")
 
 def identificar_tramite(texto):
     t = texto.lower()
@@ -26,7 +26,7 @@ def extraer_datos_mineros(pdf_file):
             if txt: texto_sucio += txt + " \n "
     cuerpo = " ".join(texto_sucio.split()).strip()
 
-    # --- Punto Medio ---
+    # Coordenadas Punto Medio
     e_m = re.search(r'(?i)Este[:\s]*([\d\.\,]{6,11})', cuerpo)
     n_m = re.search(r'(?i)Norte[:\s]*([\d\.\,]{7,12})', cuerpo)
     
@@ -40,7 +40,7 @@ def extraer_datos_mineros(pdf_file):
 
     v = {}
     if x_c and y_c:
-        # Vértices con redondeo para estabilidad en el header del SHP
+        # Redondeo para evitar errores de precisión en el Bounding Box de ArcMap
         v['V1_X'], v['V1_Y'] = round(x_c - 1500), round(y_c + 500)
         v['V2_X'], v['V2_Y'] = round(x_c + 1500), round(y_c + 500)
         v['V3_X'], v['V3_Y'] = round(x_c + 1500), round(y_c - 500)
@@ -79,27 +79,30 @@ if uploaded_files:
     if not df_geo.empty:
         geometrias = []
         for _, r in df_geo.iterrows():
-            # Orden horario V1->V2->V3->V4->V1 (Validado manualmente)
+            # Sentido horario + Cierre (Manual)
             coords = [(r.V1_X, r.V1_Y), (r.V2_X, r.V2_Y), (r.V3_X, r.V3_Y), (r.V4_X, r.V4_Y), (r.V1_X, r.V1_Y)]
             geometrias.append(Polygon(coords))
         
         gdf = gpd.GeoDataFrame(df_geo, geometry=geometrias, crs="EPSG:32719")
         
-        # Eliminar columnas de vértices para limpiar la tabla de atributos
+        # --- PASO CRÍTICO PARA ARCMAP ---
+        # 1. Asegurar que no existan geometrías vacías
+        gdf = gdf[gdf.is_valid]
+        # 2. Eliminar columnas que no sean compatibles con DBF (nombres largos)
         gdf = gdf.drop(columns=['V1_X', 'V1_Y', 'V2_X', 'V2_Y', 'V3_X', 'V3_Y', 'V4_X', 'V4_Y'])
         
         temp = "temp_shp"
         if not os.path.exists(temp): os.makedirs(temp)
         
-        # Guardar usando el driver ESRI nativo
-        base_name = "Mineria_ArcMap"
+        base_name = "Concesion"
         path = os.path.join(temp, base_name)
+        
+        # Guardar con driver explícito
         gdf.to_file(f"{path}.shp", driver='ESRI Shapefile')
 
-        # ZIP
         zip_buf = BytesIO()
         with zipfile.ZipFile(zip_buf, 'w') as zf:
             for ex in ['.shp', '.shx', '.dbf', '.prj']:
                 zf.write(f"{path}{ex}", arcname=f"{base_name}{ex}")
         
-        st.download_button("🌍 Descargar SHP (Vértices Corregidos)", zip_buf.getvalue(), "Concesion_ArcMap.zip")
+        st.download_button("🌍 Descargar SHP (Zoom Corregido)", zip_buf.getvalue(), "Concesion_ArcMap.zip")
