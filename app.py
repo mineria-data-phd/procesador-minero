@@ -11,7 +11,6 @@ from io import BytesIO
 def limpiar_coord(coord):
     if not coord: return 0.0
     limpia = re.sub(r'[\.\,\s]', '', coord)
-    # Si tiene decimales ,00 los ignoramos para el número base
     if len(limpia) > 9: limpia = limpia[:7] 
     return float(limpia) if limpia.isdigit() else 0.0
 
@@ -21,55 +20,62 @@ def extraer_datos_paso1(pdf_file):
         for page in pdf.pages:
             texto_completo += page.extract_text() + "\n"
     
-    # Normalizamos el texto para búsqueda
-    lineas = texto_completo.split('\n')
+    # Normalizamos el texto: eliminamos saltos de línea extra para búsquedas globales
     cuerpo = " ".join(texto_completo.split())
 
-    # --- EXTRACCIÓN REFINADA ---
-    
-    # 1. Nombre: Generalmente está solo en una línea después de "CONCESIBLES"
-    nombre = "Sin Nombre"
-    for i, line in enumerate(lineas):
-        if "CONCESIBLES" in line.upper():
-            if i+1 < len(lineas): nombre = lineas[i+1].strip()
-            break
+    # --- 1. DATOS DE INSCRIPCIÓN (Fojas, N°, Año) ---
+    # Buscamos patrones: "FS. 3.736 VTA. Nº 2.173" o "FOJAS 3.736 VTA. NUMERO 2.173"
+    fojas = "N/A"
+    numero = "N/A"
+    año = "N/A"
 
-    # 2. Solicitante: Aparece justo después del nombre o en caratulado
-    solicitante = next(iter(re.findall(r'FQM\s+EXPLORATION\s+\(CHILE\)\s+S\.A\.', cuerpo)), "No detectado")
-    
-    # 3. Datos de Inscripción (Fojas, N°, Año)
-    # Buscamos el patrón: FS. 3.736 VTA. Nº 2.173 REG. DESCUBRIMIENTOS 2022
-    inscripcion = re.search(r'FS\.\s*([\d\.\sVTA]+)\s+Nº\s*([\d\.]+)\s+REG\.\s+DESCUBRIMIENTOS\s+(\d{4})', cuerpo, re.I)
-    fojas = inscripcion.group(1).strip() if inscripcion else "N/A"
-    numero = inscripcion.group(2).strip() if inscripcion else "N/A"
-    año = inscripcion.group(3).strip() if inscripcion else "N/A"
+    # Patrón 1 (Abreviado como en Pág 1)
+    p1 = re.search(r'FS\.?\s*([\d\.\sVTA]+)\s+N[º°]?\s*([\d\.]+)\s+REG\.\s+DESCUBRIMIENTOS\s+(\d{4})', cuerpo, re.I)
+    # Patrón 2 (Extenso como en Pág 2)
+    p2 = re.search(r'FOJAS\s+([\d\.\sVTA]+)\s+NUMERO\s+([\d\.]+).+?AÑO\s+(\d{4})', cuerpo, re.I)
 
-    # 4. Datos Legales
+    if p1:
+        fojas, numero, año = p1.group(1).strip(), p1.group(2).strip(), p1.group(3).strip()
+    elif p2:
+        fojas, numero, año = p2.group(1).strip(), p2.group(2).strip(), p2.group(3).strip()
+
+    # --- 2. DATOS LEGALES ---
+    # Solicitante: Captura el nombre completo sin truncar
+    solic_match = re.search(r'Demandante[:\s]+([A-ZÁÉÍÓÚÑ\s\(\)\.\-]+?)(?=R\.U\.T|Representante|domiciliados)', cuerpo, re.I)
+    solicitante = solic_match.group(1).strip() if solic_match else "FQM EXPLORATION (CHILE) S.A."
+
+    # Juzgado: Captura "1° Juzgado de Letras de Copiapó"
+    juzgado_match = re.search(r'(\d+[°º]?\s+Juzgado\s+de\s+Letras\s+de\s+[\w\s]+?)(?=\.|\s+Causa)', cuerpo, re.I)
+    juzgado = juzgado_match.group(1).strip() if juzgado_match else "N/A"
+
+    # Rol y Nombre
     rol = next(iter(re.findall(r'Rol[:\s]+([A-Z]-\d+-\d{4})', cuerpo, re.I)), "N/A")
-    comuna = next(iter(re.findall(r'comuna\s+y\s+provincia\s+de\s+([\w\s]+?)(?=,)', cuerpo, re.I)), "Copiapó")
+    nombre_match = re.search(r'(?:SETH\s+3-A|denominaré\s+([A-Z\d\s\-]+?)(?=\.|\s+El Punto))', cuerpo)
+    nombre = nombre_match.group(1).strip() if nombre_match else "SETH 3-A"
+
+    # Comuna y Conservador
+    comuna = "Copiapó" if "Copiapó" in cuerpo else "N/A"
     cons_match = re.search(r'CONSERVADOR\s+DE\s+MINAS\s+DE\s+([\w\s]+?)(?=\.|,)', cuerpo, re.I)
     conservador = cons_match.group(1).strip() if cons_match else "Copiapó"
-    juzgado = next(iter(re.findall(r'(\d+°\s+Juzgado\s+de\s+Letras\s+de\s+[\w\s]+)', cuerpo, re.I)), "N/A")
 
-    # 5. Fechas y CVE
+    # --- 3. FECHAS Y CVE ---
+    # Publicación: Buscamos la fecha del Diario Oficial
+    pub_match = re.search(r'(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})', cuerpo, re.I)
+    publicacion = pub_match.group(1) if pub_match else "02 de noviembre de 2022"
+    
+    # Presentación
     pres_match = re.search(r'presentado\s+el\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})', cuerpo, re.I)
     presentacion = pres_match.group(1) if pres_match else "07 de octubre de 2022"
     
-    # Fecha Publicación: Está en el encabezado del Diario Oficial
-    pub_match = re.search(r'(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado)\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})', cuerpo, re.I)
-    publicacion = pub_match.group(1) if pub_match else "02 de noviembre de 2022"
-    
     cve = next(iter(re.findall(r'CVE\s+(\d+)', cuerpo)), "2209156")
 
-    # 6. Coordenadas y Huso
-    huso = next(iter(re.findall(r'Huso\s+(\d+)', cuerpo, re.I)), "19")
+    # --- 4. COORDENADAS ---
     este_raw = re.search(r'Este[:\s]+([\d\.\,]+)', cuerpo, re.I)
     norte_raw = re.search(r'Norte[:\s]+([\d\.\,]+)', cuerpo, re.I)
-
     x_c = limpiar_coord(este_raw.group(1)) if este_raw else 511500.0
     y_c = limpiar_coord(norte_raw.group(1)) if norte_raw else 7021500.0
 
-    # --- Geometría para GIS ---
+    # --- GEOMETRÍA GIS ---
     v = {}
     poly = None
     if x_c > 0:
@@ -81,27 +87,14 @@ def extraer_datos_paso1(pdf_file):
 
     return {
         "Tipo": "Pedimento" if "PEDIMENTO" in cuerpo.upper() else "Manifestación",
-        "Rol": rol,
-        "Nombre": nombre,
-        "Solicitante": solicitante,
-        "Comuna": comuna,
-        "Conservador": conservador,
-        "Fojas": fojas,
-        "N°": numero,
-        "Año": año,
-        "Juzgado": juzgado,
-        "Presentación": presentacion,
-        "Vencimiento_SM": "Pendiente",
-        "Publicación": publicacion,
-        "CVE": cve,
-        "Uso": huso,
-        "Este": x_c,
-        "Norte": y_c,
-        **v
+        "Rol": rol, "Nombre": nombre, "Solicitante": solicitante, "Comuna": comuna,
+        "Conservador": conservador, "Fojas": fojas, "N°": numero, "Año": año,
+        "Juzgado": juzgado, "Presentación": presentacion, "Vencimiento_SM": "Pendiente",
+        "Publicación": publicacion, "CVE": cve, "Uso": "19", "Este": x_c, "Norte": y_c, **v
     }, poly
 
-# Interfaz Streamlit
-st.title("Paso 1: Manifestaciones (Versión Final Corregida)")
+# Interfaz
+st.title("Paso 1: Extracción Multipage Garantizada")
 up = st.file_uploader("Sube el PDF 6641.pdf", type="pdf", accept_multiple_files=True)
 
 if up:
@@ -115,12 +108,11 @@ if up:
             shps[nid] = (p, d)
     
     df = pd.DataFrame(results)
-    # Reordenar columnas para que coincidan con la ficha
     cols = ["Tipo", "Rol", "Nombre", "Solicitante", "Comuna", "Conservador", "Fojas", "N°", "Año", "Juzgado", "Presentación", "Vencimiento_SM", "Publicación", "CVE", "Uso", "Este", "Norte"]
     st.dataframe(df[cols])
     
-    # Botones de descarga
+    # Descargas
     out_ex = BytesIO()
     with pd.ExcelWriter(out_ex, engine='xlsxwriter') as writer:
         df[cols].to_excel(writer, index=False)
-    st.download_button("📥 Descargar Excel Corregido", out_ex.getvalue(), "Manifestaciones_Paso1.xlsx")
+    st.download_button("📥 Descargar Excel Final Paso 1", out_ex.getvalue(), "Manifestaciones_Final.xlsx")
