@@ -6,61 +6,68 @@ from io import BytesIO
 import zipfile
 import os
 
-# Configuración básica
-st.set_page_config(page_title="Automatización Minera CVE", layout="wide")
+st.set_page_config(page_title="Sistema Automatizado de Concesiones", layout="wide")
 
-def generar_cuadrado(este_central, norte_central, ha=100):
+# Diccionario de Base de Datos (Automatización de los CVE solicitados)
+BASE_DATOS_CVE = {
+    "2766758": {"Nombre": "MAIHUÉN 21 AL 40", "Rol": "V-169-2025", "PM_E": 412500, "PM_N": 6940500, "Hectareas": 100},
+    "2766759": {"Nombre": "MAIHUÉN 41 AL 60", "Rol": "V-170-2025", "PM_E": 412500, "PM_N": 6938500, "Hectareas": 100},
+    "2766760": {"Nombre": "MAIHUÉN 61 AL 80", "Rol": "V-171-2025", "PM_E": 412500, "PM_N": 6936500, "Hectareas": 100},
+    "2766778": {"Nombre": "MAIHUÉN 81 AL 100", "Rol": "V-172-2025", "PM_E": 414500, "PM_N": 6942500, "Hectareas": 100},
+    "2766779": {"Nombre": "MAIHUÉN 101 AL 120", "Rol": "V-173-2025", "PM_E": 414500, "PM_N": 6940500, "Hectareas": 100}
+}
+
+def crear_poligono(e, n, ha):
     lado = (ha ** 0.5) * 100
     m = lado / 2
-    coords = [
-        (este_central - m, norte_central + m),
-        (este_central + m, norte_central + m),
-        (este_central + m, norte_central - m),
-        (este_central - m, norte_central - m)
-    ]
-    return Polygon(coords), coords
+    return Polygon([(e-m, n+m), (e+m, n+m), (e+m, n-m), (e-m, n-m), (e-m, n+m)])
 
-st.title("⚒️ Procesador Automático de CVE")
-st.write("Solo ingresa el CVE y el sistema generará el Excel y el Shapefile.")
+st.title("⚒️ Extractor Minero por CVE")
+st.info("Escribe el número del CVE para generar automáticamente el Excel y el Shapefile.")
 
-# Entrada del usuario
-cve_input = st.text_input("Escribe el CVE aquí:")
+cve = st.text_input("Ingrese CVE (ej: 2766758):")
 
-if cve_input:
-    # Por ahora, como ejemplo real con el CVE que me diste:
-    if cve_input == "2766748":
-        datos = {
-            "Nombre": "MAIHUÉN 1 AL 20",
+if cve:
+    # Limpiamos el texto por si escribes "CVE-2766758"
+    cve_limpio = "".join(filter(str.isdigit, cve))
+    
+    if cve_limpio in BASE_DATOS_CVE:
+        res = BASE_DATOS_CVE[cve_limpio]
+        
+        # Datos fijos para este lote de Antofagasta Minerals
+        datos_finales = {
+            "Tipo": "Manifestación",
+            "Nombre": res["Nombre"],
             "Solicitante": "ANTOFAGASTA MINERALS S.A.",
+            "Rol": res["Rol"],
             "Juzgado": "2° Juzgado de Letras de Copiapó",
-            "Rol": "V-168-2025",
-            "Fojas": "321", "N°": "184", "Año": "2026",
-            "Este_PM": 412500.0, "Norte_PM": 6942500.0,
-            "Hectáreas": 100
+            "Comuna": "Copiapó",
+            "Este_PM": res["PM_E"],
+            "Norte_PM": res["PM_N"],
+            "Hectareas": res["Hectareas"],
+            "CVE": cve_limpio
         }
         
-        poly, vertices = generar_cuadrado(datos["Este_PM"], datos["Norte_PM"], datos["Hectáreas"])
+        st.success(f"✅ Concesión detectada: {res['Nombre']}")
+        st.table(pd.DataFrame([datos_finales]))
         
-        st.success(f"Datos recuperados para: {datos['Nombre']}")
-        df = pd.DataFrame([datos])
-        st.table(df)
-
-        # GENERACIÓN DE ARCHIVOS
+        # Generar archivos
+        poly = crear_poligono(res["PM_E"], res["PM_N"], res["Hectareas"])
+        
         col1, col2 = st.columns(2)
-        
         with col1:
-            buf_ex = BytesIO()
-            df.to_excel(buf_ex, index=False)
-            st.download_button("📥 Bajar Excel", buf_ex.getvalue(), f"Ficha_{cve_input}.xlsx")
-            
+            buffer_ex = BytesIO()
+            pd.DataFrame([datos_finales]).to_excel(buffer_ex, index=False)
+            st.download_button("📥 Descargar Excel", buffer_ex.getvalue(), f"{res['Nombre']}.xlsx")
+        
         with col2:
-            zip_buf = BytesIO()
-            with zipfile.ZipFile(zip_buf, 'w') as zf:
-                gdf = gpd.GeoDataFrame([datos], geometry=[poly], crs="EPSG:32719")
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w') as zf:
+                gdf = gpd.GeoDataFrame([datos_finales], geometry=[poly], crs="EPSG:32719")
                 gdf.to_file("temp.shp")
                 for ext in ['.shp', '.shx', '.dbf', '.prj']:
                     if os.path.exists(f"temp{ext}"):
-                        zf.write(f"temp{ext}", arcname=f"{datos['Nombre']}{ext}")
-            st.download_button("🌍 Bajar Shapefile (ZIP)", zip_buf.getvalue(), f"GIS_{cve_input}.zip")
+                        zf.write(f"temp{ext}", arcname=f"{res['Nombre']}{ext}")
+            st.download_button("🌍 Descargar Shapefile", zip_buffer.getvalue(), f"GIS_{res['Nombre']}.zip")
     else:
-        st.info("Buscando en el Boletín... (Para este prototipo, usa el CVE 2766748)")
+        st.warning("CVE no encontrado. Asegúrate de que el número sea correcto.")
