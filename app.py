@@ -6,23 +6,28 @@ from io import BytesIO
 import zipfile
 import os
 
+# Configuración de página
 st.set_page_config(page_title="Sistema Automatizado de Concesiones", layout="wide")
 
-# 1. DEFINICIÓN DE FUNCIONES (Primero definimos cómo se hacen las cosas)
-def crear_poligono(e, n, ha):
+# 1. DEFINICIÓN DE FUNCIONES (Primero definimos CÓMO se hacen las cosas)
+def crear_poligono_manifestacion(e, n, ha):
+    """Calcula los 4 vértices de un cuadrado basado en PM y Hectáreas"""
+    # Determinamos el largo del lado (raíz cuadrada de superficie en m2)
+    # Ejemplo: 100 ha = 1.000.000 m2 -> Lado = 1.000m
     lado = (ha * 10000)**0.5
     distancia = lado / 2
     
     # Vértices: V1(NW), V2(NE), V3(SE), V4(SW)
-    v1 = (e - distancia, n + distancia)
-    v2 = (e + distancia, n + distancia)
-    v3 = (e + distancia, n - distancia)
-    v4 = (e - distancia, n - distancia)
+    v1 = (e - distancia, n + distancia) # Noroeste
+    v2 = (e + distancia, n + distancia) # Noreste
+    v3 = (e + distancia, n - distancia) # Sureste
+    v4 = (e - distancia, n - distancia) # Suroeste
     
+    # Creamos el polígono para el Shapefile (cerrando el círculo)
     poly = Polygon([v1, v2, v3, v4, v1])
     return poly, v1, v2, v3, v4
 
-# Diccionario de Base de Datos
+# 2. BASE DE DATOS LOCAL (Aquí está la automatización para tus CVEs)
 BASE_DATOS_CVE = {
     "2766758": {"Nombre": "MAIHUÉN 21 AL 40", "Rol": "V-169-2025", "PM_E": 412500, "PM_N": 6940500, "Hectareas": 100},
     "2766759": {"Nombre": "MAIHUÉN 41 AL 60", "Rol": "V-170-2025", "PM_E": 412500, "PM_N": 6938500, "Hectareas": 100},
@@ -31,18 +36,20 @@ BASE_DATOS_CVE = {
     "2766779": {"Nombre": "MAIHUÉN 101 AL 120", "Rol": "V-173-2025", "PM_E": 414500, "PM_N": 6940500, "Hectareas": 100}
 }
 
-# 2. INTERFAZ DE USUARIO
-st.title("⚒️ Extractor Minero por CVE")
+# 3. INTERFAZ DE USUARIO
+st.title("⚒️ Extractor Minero Automático")
 st.info("Escribe el número del CVE para generar automáticamente el Excel y el Shapefile.")
 
 cve = st.text_input("Ingrese CVE (ej: 2766758):")
 
 if cve:
+    # Limpiamos el texto por si escriben "CVE-2766758"
     cve_limpio = "".join(filter(str.isdigit, cve))
     
     if cve_limpio in BASE_DATOS_CVE:
         res = BASE_DATOS_CVE[cve_limpio]
         
+        # Datos fijos para este lote de Antofagasta Minerals
         datos_finales = {
             "Tipo": "Manifestación",
             "Nombre": res["Nombre"],
@@ -59,8 +66,8 @@ if cve:
         st.success(f"✅ Concesión detectada: {res['Nombre']}")
         st.table(pd.DataFrame([datos_finales]))
         
-        # 3. CÁLCULO GEOMÉTRICO (Aquí llamamos a la función ya definida)
-        poly, v1, v2, v3, v4 = crear_poligono(res["PM_E"], res["PM_N"], res["Hectareas"])
+        # 4. CÁLCULO GEOMÉTRICO (Aquí llamamos a la función ya definida)
+        poly, v1, v2, v3, v4 = crear_poligono_manifestacion(res["PM_E"], res["PM_N"], res["Hectareas"])
         
         st.subheader("📍 Coordenadas de los Vértices (UTM 19S)")
         col_v1, col_v2, col_v3, col_v4 = st.columns(4)
@@ -69,7 +76,7 @@ if cve:
         col_v3.write(f"**V3 (SE):** {v3[0]}E / {v3[1]}N")
         col_v4.write(f"**V4 (SW):** {v4[0]}E / {v4[1]}N")
         
-        # 4. GENERAR ARCHIVOS
+        # 5. GENERAR ARCHIVOS
         col1, col2 = st.columns(2)
         with col1:
             buffer_ex = BytesIO()
