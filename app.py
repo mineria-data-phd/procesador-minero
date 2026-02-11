@@ -1,73 +1,29 @@
-import streamlit as st
-import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Polygon
-from io import BytesIO
-import zipfile
-import os
-
-st.set_page_config(page_title="Sistema Automatizado de Concesiones", layout="wide")
-
-# Diccionario de Base de Datos (Automatización de los CVE solicitados)
-BASE_DATOS_CVE = {
-    "2766758": {"Nombre": "MAIHUÉN 21 AL 40", "Rol": "V-169-2025", "PM_E": 412500, "PM_N": 6940500, "Hectareas": 100},
-    "2766759": {"Nombre": "MAIHUÉN 41 AL 60", "Rol": "V-170-2025", "PM_E": 412500, "PM_N": 6938500, "Hectareas": 100},
-    "2766760": {"Nombre": "MAIHUÉN 61 AL 80", "Rol": "V-171-2025", "PM_E": 412500, "PM_N": 6936500, "Hectareas": 100},
-    "2766778": {"Nombre": "MAIHUÉN 81 AL 100", "Rol": "V-172-2025", "PM_E": 414500, "PM_N": 6942500, "Hectareas": 100},
-    "2766779": {"Nombre": "MAIHUÉN 101 AL 120", "Rol": "V-173-2025", "PM_E": 414500, "PM_N": 6940500, "Hectareas": 100}
-}
-
-def crear_poligono(e, n, ha):
-    lado = (ha ** 0.5) * 100
-    m = lado / 2
-    return Polygon([(e-m, n+m), (e+m, n+m), (e+m, n-m), (e-m, n-m), (e-m, n+m)])
-
-st.title("⚒️ Extractor Minero por CVE")
-st.info("Escribe el número del CVE para generar automáticamente el Excel y el Shapefile.")
-
-cve = st.text_input("Ingrese CVE (ej: 2766758):")
-
-if cve:
-    # Limpiamos el texto por si escribes "CVE-2766758"
-    cve_limpio = "".join(filter(str.isdigit, cve))
+def calcular_vertices_y_poly(este_pm, norte_pm, hectareas):
+    # Determinamos el largo del lado (raíz cuadrada de superficie en m2)
+    # Ejemplo: 100 ha = 1.000.000 m2 -> Lado = 1.000m
+    lado = (hectareas * 10000)**0.5
+    distancia = lado / 2
     
-    if cve_limpio in BASE_DATOS_CVE:
-        res = BASE_DATOS_CVE[cve_limpio]
-        
-        # Datos fijos para este lote de Antofagasta Minerals
-        datos_finales = {
-            "Tipo": "Manifestación",
-            "Nombre": res["Nombre"],
-            "Solicitante": "ANTOFAGASTA MINERALS S.A.",
-            "Rol": res["Rol"],
-            "Juzgado": "2° Juzgado de Letras de Copiapó",
-            "Comuna": "Copiapó",
-            "Este_PM": res["PM_E"],
-            "Norte_PM": res["PM_N"],
-            "Hectareas": res["Hectareas"],
-            "CVE": cve_limpio
-        }
-        
-        st.success(f"✅ Concesión detectada: {res['Nombre']}")
-        st.table(pd.DataFrame([datos_finales]))
-        
-        # Generar archivos
-        poly = crear_poligono(res["PM_E"], res["PM_N"], res["Hectareas"])
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            buffer_ex = BytesIO()
-            pd.DataFrame([datos_finales]).to_excel(buffer_ex, index=False)
-            st.download_button("📥 Descargar Excel", buffer_ex.getvalue(), f"{res['Nombre']}.xlsx")
-        
-        with col2:
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w') as zf:
-                gdf = gpd.GeoDataFrame([datos_finales], geometry=[poly], crs="EPSG:32719")
-                gdf.to_file("temp.shp")
-                for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                    if os.path.exists(f"temp{ext}"):
-                        zf.write(f"temp{ext}", arcname=f"{res['Nombre']}{ext}")
-            st.download_button("🌍 Descargar Shapefile", zip_buffer.getvalue(), f"GIS_{res['Nombre']}.zip")
-    else:
-        st.warning("CVE no encontrado. Asegúrate de que el número sea correcto.")
+    v1 = (este_pm - distancia, norte_pm + distancia) # Noroeste
+    v2 = (este_pm + distancia, norte_pm + distancia) # Noreste
+    v3 = (este_pm + distancia, norte_pm - distancia) # Sureste
+    v4 = (este_pm - distancia, norte_pm - distancia) # Suroeste
+    
+    # Creamos el polígono para el Shapefile
+    poly = Polygon([v1, v2, v3, v4, v1])
+    
+    vertices_dict = {
+        "V1_E": v1[0], "V1_N": v1[1],
+        "V2_E": v2[0], "V2_N": v2[1],
+        "V3_E": v3[0], "V3_N": v3[1],
+        "V4_E": v4[0], "V4_N": v4[1]
+    }
+    return poly, vertices_dict
+
+# En la parte donde se muestra el resultado en Streamlit:
+poly, v_coords = calcular_vertices_y_poly(res["PM_E"], res["PM_N"], res["Hectareas"])
+st.subheader("📍 Coordenadas de los Vértices (UTM)")
+st.write(f"**V1 (NW):** {v_coords['V1_E']} E / {v_coords['V1_N']} N")
+st.write(f"**V2 (NE):** {v_coords['V2_E']} E / {v_coords['V2_N']} N")
+st.write(f"**V3 (SE):** {v_coords['V3_E']} E / {v_coords['V3_N']} N")
+st.write(f"**V4 (SW):** {v_coords['V4_E']} E / {v_coords['V4_N']} N")
