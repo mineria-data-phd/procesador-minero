@@ -1,8 +1,9 @@
 streamlit
-pdfplumber
 pandas
 xlsxwriter
 geopandas
-pyogrio
 shapely
+requests
+beautifulsoup4
+
 
