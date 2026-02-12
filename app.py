@@ -8,27 +8,28 @@ import xlsxwriter
 st.set_page_config(page_title="Procesador Minero Profesional", layout="wide")
 
 def limpiar_texto(t):
-    # Esta función pega las palabras que están separadas por saltos de línea
+    # Une las palabras que el PDF separa en distintos renglones
+    if not t: return ""
     return re.sub(r'\s+', ' ', t).strip()
 
 def extraer_datos_mineros(texto_sucio):
     texto = limpiar_texto(texto_sucio)
     
-    # 1. Propiedad (Busca entre comillas de todo tipo)
+    # 1. Propiedad (Valentina 2, Tibu 3, etc)
     prop = re.search(r'(?:denominada|pertenencia|pertenencias)\s+[“"“]([^”"”]+)[”"”]', texto, re.IGNORECASE)
     
     # 2. Rol
     rol = re.search(r"Rol\s+N[°º]?\s*([A-Z0-9\-]+)", texto, re.IGNORECASE)
     
-    # 3. Juzgado (Busca el número y la ciudad)
+    # 3. Juzgado (Captura 3º EN LO CIVIL DE COPIAPÓ)
     juz = re.search(r"(?:S\.J\.L\.|JUZGADO)\s*(\d+.*? (?:COPIAPÓ|LA SERENA|VALLENAR|SANTIAGO))", texto, re.IGNORECASE)
     
-    # 4. Solicitante (Ahora captura el nombre completo aunque esté cortado en el PDF)
+    # 4. Solicitante (Captura el nombre completo sin cortes)
     solic = re.search(r"representación(?:.*? de| de)\s+([^,]+?)(?:\s*,|\s+individualizada|\s+ya|$)", texto, re.IGNORECASE)
 
     # 5. Fechas
     f_pub = re.search(r"(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto)
-    f_sol_m = re.search(r"manifestadas\s+con\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto, re.IGNORECASE)
+    f_sol_m = re.search(r"(?:manifestadas|presentación)\s+con\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto, re.IGNORECASE)
     f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar),\s+([a-z\s]+de\s+[a-z]+\s+de\s+dos\s+mil\s+[a-z]+)", texto, re.IGNORECASE)
 
     return {
@@ -45,38 +46,39 @@ def extraer_datos_mineros(texto_sucio):
     }
 
 def extraer_coordenadas(texto):
-    # Captura V1, L1, etc.
+    # Busca las coordenadas en la tabla
     patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]+)\s+([\d\.\,]+)"
     coincidencias = re.findall(patron, texto)
-    return [(f"V{c[0]}" if c[0] else "V", float(c[1].replace(".", "").replace(",", ".")), float(c[2].replace(".", "").replace(",", "."))) for c in coincidencia] if 'coincidencia' else []
-    # Corrección rápida de la variable para el usuario:
-    coincidencias_limpias = []
+    puntos_limpios = []
     for c in coincidencias:
         norte = float(c[1].replace(".", "").replace(",", "."))
         este = float(c[2].replace(".", "").replace(",", "."))
-        coincidencias_limpias.append((f"V{c[0]}", norte, este))
-    return coincidencias_limpias
+        puntos_limpios.append({"Vértice": f"V{c[0]}" if c[0] else "V", "Norte (Y)": norte, "Este (X)": este})
+    return puntos_limpios
 
 st.title("⚒️ Sistema de Fichas Mineras Pro")
-archivo_pdf = st.file_uploader("Sube el PDF de Mensura (VALENTINA 2 o TIBU 3)", type=["pdf"])
+archivo_pdf = st.file_uploader("Sube el PDF de Mensura", type=["pdf"])
 
 if archivo_pdf:
     with pdfplumber.open(archivo_pdf) as pdf:
-        texto_completo = "".join([p.extract_text() for p in pdf.pages])
+        texto_completo = ""
+        for pagina in pdf.pages:
+            texto_completo += pagina.extract_text() + " "
     
     datos = extraer_datos_mineros(texto_completo)
     puntos = extraer_coordenadas(texto_completo)
     
     if datos:
-        st.success(f"✅ Ficha generada con éxito")
+        st.success(f"✅ Ficha procesada con éxito")
+        # Mostrar resumen en pantalla
         st.table(pd.DataFrame(list(datos.items()), columns=["Campo", "Valor"]))
         
-        # Botón Excel
+        # Crear Excel
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             pd.DataFrame([datos]).to_excel(writer, sheet_name='Ficha_Tecnica', index=False)
             if puntos:
-                pd.DataFrame(puntos, columns=['Vértice', 'Norte (Y)', 'Este (X)']).to_excel(writer, sheet_name='Coordenadas', index=False)
+                pd.DataFrame(puntos).to_excel(writer, sheet_name='Coordenadas', index=False)
         
         st.download_button(
             label="📥 Descargar Excel Completo",
