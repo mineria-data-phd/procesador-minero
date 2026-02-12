@@ -8,7 +8,7 @@ from io import BytesIO
 import zipfile
 import os
 
-# --- (Funciones de normalizar_fecha y extraer_datos permanecen igual que la versión anterior) ---
+# --- FUNCIONES DE LIMPIEZA Y FECHAS ---
 
 def normalizar_fecha(texto):
     MESES = {"enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
@@ -18,30 +18,48 @@ def normalizar_fecha(texto):
                "dieciséis": "16", "diecisiete": "17", "dieciocho": "18", "diecinueve": "19", "veinte": "20", "veintiuno": "21", 
                "veintidós": "22", "veintitrés": "23", "veinticuatro": "24", "veinticinco": "25", "veintiséis": "26", 
                "veintisiete": "27", "veintiocho": "28", "veintinueve": "29", "treinta": "30", "treintiuno": "31"}
+    
     if not texto or "No detectado" in texto: return "No detectado"
-    t = texto.lower().replace("  ", " ")
+    t = texto.lower().replace("  ", " ").strip()
+    
+    # 1. Caso: "16 de enero de 2026" (Números)
     m1 = re.search(r"(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})", t)
     if m1:
         dia, mes, año = m1.groups()
         return f"{dia.zfill(2)}/{MESES.get(mes, '01')}/{año}"
+    
+    # 2. Caso: "dieciséis de enero de dos mil veintiséis" (Letras)
     m2 = re.search(r"(\w+)\s+de\s+(\w+)\s+de\s+dos\s+mil\s+(\w+)", t)
     if m2:
         dia_txt, mes_txt, año_txt = m2.groups()
-        return f"{NUMEROS.get(dia_txt, '01')}/{MESES.get(mes_txt, '01')}/20{NUMEROS.get(año_txt, '26')}"
+        # Buscamos el año (si es veintiséis -> 2026, si es veinticinco -> 2025)
+        año_final = "20" + NUMEROS.get(año_txt, "26")
+        return f"{NUMEROS.get(dia_txt, '01')}/{MESES.get(mes_txt, '01')}/{año_final}"
+    
     return texto
 
 def extraer_datos_mineros(texto_sucio):
+    # Limpiamos exceso de espacios para que el buscador no se pierda
     texto = re.sub(r'\s+', ' ', texto_sucio).strip()
+    
     prop = re.search(r'(?:denominada|pertenencia|pertenencias)\s+[“"“]([^”"”]+)[”"”]', texto, re.IGNORECASE)
     rol = re.search(r"Rol\s+N[°º]?\s*([A-Z0-9\-]+)", texto, re.IGNORECASE)
     juz = re.search(r"(?:S\.J\.L\.|JUZGADO)\s*(\d+.*? (?:COPIAPÓ|LA SERENA|VALLENAR|SANTIAGO))", texto, re.IGNORECASE)
     solic = re.search(r"representación(?:.*? de| de)\s+([^,]+?)(?:\s*,|\s+individualizada|\s+ya|$)", texto, re.IGNORECASE)
+    
+    # FECHAS
+    # Fecha de Publicación (Siempre viene con día de la semana)
     f_pub = re.search(r"(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto)
+    
+    # Fecha de Solicitud de Mensura (Dato histórico)
     f_sol_m = re.search(r"(?:manifestadas|presentación)\s+con\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto, re.IGNORECASE)
-    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar),\s+([a-z\s]+de\s+[a-z]+\s+de\s+dos\s+mil\s+[a-z]+)", texto, re.IGNORECASE)
+    
+    # FECHA DE RESOLUCIÓN (La que fallaba):
+    # Ahora la buscamos después del nombre de la ciudad al final del documento
+    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar|Atacama),\s+([a-z\d\s]+de\s+[a-z]+\s+de\s+[\w\s]+)", texto, re.IGNORECASE)
 
     return {
-        "Propiedad": prop.group(1).strip() if prop else "VALENTINA 2",
+        "Propiedad": prop.group(1).strip() if prop else "No detectado",
         "Rol": rol.group(1).strip() if rol else "Sin Rol",
         "Juzgado": juz.group(1).strip() if juz else "Sin Juzgado",
         "Solicitante": solic.group(1).strip().replace('“', '').replace('”', '') if solic else "Sin Solicitante",
@@ -86,12 +104,10 @@ if archivo_pdf:
         with col2:
             if len(puntos) >= 3:
                 poligono = Polygon(puntos + [puntos[0]])
-                # Aquí ocurre el 'Join': Pasamos el diccionario 'datos' al GeoDataFrame
                 gdf = gpd.GeoDataFrame([datos], geometry=[poligono], crs="EPSG:32719")
                 
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w') as zf:
-                    # Guardamos con un nombre corto para evitar errores en el DBF
                     gdf.to_file("export.shp")
                     for ext in ['.shp', '.shx', '.dbf', '.prj']:
                         zf.write(f"export{ext}", arcname=f"{datos['Propiedad']}{ext}")
