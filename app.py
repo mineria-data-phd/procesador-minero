@@ -10,52 +10,49 @@ import os
 
 st.set_page_config(page_title="Procesador Minero Profesional", layout="wide")
 
-def extraer_todo_final(texto):
-    # 1. Propiedad (Busca entre comillas después de palabras clave)
-    nombre = re.search(r'(?:denominada|pertenencias|pertenencia)\s+"([^"]+)"', texto, re.IGNORECASE)
+def extraer_datos_mineros(texto):
+    # 1. Propiedad: Maneja comillas normales (") y curvas (“ ”)
+    prop = re.search(r'(?:denominada|pertenencias|pertenencia)\s+(?:"|“)([^"”]+)(?:"|”)', texto, re.IGNORECASE)
     
-    # 2. Rol (Captura formatos como V-1068-2025 o V-35-2022)
-    rol = re.search(r"Rol\s+N°?\s*([\w\-]+)", texto, re.IGNORECASE)
+    # 2. Rol: Busca el código exacto después de N°
+    rol = re.search(r"Rol\s+N[°º]?\s*([A-Z0-9\-]+)", texto, re.IGNORECASE)
     
-    # 3. Juzgado (Captura "3º EN LO CIVIL DE COPIAPÓ" o "1º Juzgado...")
-    juzgado = re.search(r"(?:S\.J\.L\.|JUZGADO)\s+(\d+º?\s+.*?)(?:CAUSA|ROL|$)", texto, re.IGNORECASE)
+    # 3. Juzgado: Captura formatos civiles y de letras
+    juz = re.search(r"(\d+º?\s+(?:EN\s+LO\s+CIVIL|Juzgado\s+de\s+Letras)\s+de\s+[\w\sÁÉÍÓÚñáéíóú]+)", texto, re.IGNORECASE)
     
-    # 4. Solicitante (Captura el nombre completo sin cortes)
-    solicitante = re.search(r"representación\s+(?:judicial\s+)?(?:según\s+se\s+acreditará\s+de|de)\s+([^,.\n]+?)(?:\s*,|\s*ya|\s*individualizada|\s*del|$)", texto, re.IGNORECASE)
+    # 4. Solicitante: Limpia las comillas del nombre
+    solic = re.search(r"representación(?:\s+judicial)?\s+(?:según\s+se\s+acreditará\s+de|de)\s+([^,.\n]+)", texto, re.IGNORECASE)
+    solicitante_final = solic.group(1).replace('“', '').replace('”', '').replace('"', '').strip() if solic else "No detectado"
+
+    # 5. Fechas
+    # Publicación: Encabezado del Diario Oficial
+    f_pub = re.search(r"(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto)
     
-    # 5. Comuna y CVE
-    comuna = re.search(r"(?:domiciliado\s+en|de\s+la\s+ciudad\s+de)\s+([\w\s]+?)(?:,|\s+Avenida|$)", texto, re.IGNORECASE)
-    cve = re.search(r"CVE\s+(\d+)", texto)
+    # Solicitud Mensura: Fecha de manifestación citada
+    f_sol_m = re.search(r"manifestadas\s+with\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto, re.IGNORECASE)
+    if not f_sol_m: # Alternativa para Valentina 2
+        f_sol_m = re.search(r"manifestadas\s+con\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto, re.IGNORECASE)
     
-    # 6. FECHAS
-    f_publicacion = re.search(r"(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto)
-    f_sol_mensura = re.search(r"manifestadas\s+con\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto)
-    # Fecha de resolución al final
-    f_mensura = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar),\s+([a-z\s]+de\s+[a-z]+\s+de\s+dos\s+mil\s+[a-z\s]+)", texto, re.IGNORECASE)
+    # Mensura (Resolución): Al final junto a la ciudad
+    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar),\s+([a-záéíóúüñ\s]+de\s+[a-záéíóúüñ]+\s+de\s+dos\s+mil\s+[a-záéíóúüñ\s]+)", texto, re.IGNORECASE)
 
     return {
-        "Propiedad": nombre.group(1).strip() if nombre else "No detectado",
+        "Propiedad": prop.group(1).strip() if prop else "No detectado",
         "Rol": rol.group(1).strip() if rol else "No detectado",
-        "Juzgado": juzgado.group(1).strip() if juzgado else "No detectado",
-        "Solicitante": solicitante.group(1).strip() if solicitante else "No detectado",
-        "Comuna": comuna.group(1).strip() if comuna else "No detectado",
-        "CVE": cve.group(1) if cve else "No detectado",
-        "F_Sol_Mensura": f_sol_mensura.group(1) if f_sol_mensura else "No detectado",
-        "F_Mensura": f_mensura.group(1) if f_mensura else "No detectado",
-        "F_Publicacion": f_publicacion.group(1) if f_publicacion else "No detectado",
+        "Juzgado": juz.group(1).strip() if juz else "No detectado",
+        "Solicitante": solicitante_final,
+        "Comuna": "Copiapó" if "Copiapó" in texto else "La Serena",
+        "CVE": re.search(r"CVE\s+(\d+)", texto).group(1) if re.search(r"CVE\s+(\d+)", texto) else "No detectado",
+        "F_Sol_Mensura": f_sol_m.group(1) if f_sol_m else "No detectado",
+        "F_Mensura": f_res.group(1).strip() if f_res else "No detectado",
+        "F_Publicacion": f_pub.group(1) if f_pub else "No detectado",
         "Huso": "19"
     }
 
 def extraer_coordenadas(texto):
-    # Detecta V1, L1, etc.
-    patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]+)\s*(?:metros)?\s+([\d\.\,]+)\s*(?:metros)?"
+    patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]+)\s+([\d\.\,]+)"
     coincidencias = re.findall(patron, texto)
-    puntos = []
-    for c in coincidencias:
-        norte = float(c[1].replace(".", "").replace(",", "."))
-        este = float(c[2].replace(".", "").replace(",", "."))
-        puntos.append((este, norte))
-    return puntos
+    return [(float(c[2].replace(".", "").replace(",", ".")), float(c[1].replace(".", "").replace(",", "."))) for c in coincidencias]
 
 st.title("⚒️ Sistema de Fichas Mineras Pro")
 archivo_pdf = st.file_uploader("Sube el PDF de Mensura", type=["pdf"])
@@ -64,18 +61,27 @@ if archivo_pdf:
     with pdfplumber.open(archivo_pdf) as pdf:
         texto = "".join([p.extract_text() for p in pdf.pages])
     
-    datos = extraer_todo_final(texto)
+    datos = extraer_datos_mineros(texto)
     puntos = extraer_coordenadas(texto)
     
     if puntos:
-        st.success(f"✅ Ficha generada con éxito")
-        st.table(pd.DataFrame(list(datos.items()), columns=["Dato", "Valor"]))
+        st.success(f"✅ Ficha generada: {datos['Propiedad']}")
+        st.table(pd.DataFrame(list(datos.items()), columns=["Campo", "Valor"]))
         
-        # Botones de descarga
+        # Generar Excel
         buffer_ex = BytesIO()
         with pd.ExcelWriter(buffer_ex, engine='xlsxwriter') as writer:
             pd.DataFrame([datos]).to_excel(writer, sheet_name='Ficha_Tecnica', index=False)
-            pd.DataFrame(puntos, columns=['Este', 'Norte']).to_excel(writer, sheet_name='Coordenadas', index=False)
+            pd.DataFrame(puntos, columns=['Este (X)', 'Norte (Y)']).to_excel(writer, sheet_name='Coordenadas', index=False)
         st.download_button("📥 Descargar Excel Completo", buffer_ex.getvalue(), f"Ficha_{datos['Propiedad']}.xlsx")
-    else:
-        st.error("No se detectaron coordenadas. Revisa el formato del PDF.")
+        
+        # Generar Shapefile
+        if len(puntos) >= 3:
+            poly = Polygon(puntos)
+            gdf = gpd.GeoDataFrame([datos], geometry=[poly], crs="EPSG:32719")
+            zip_buf = BytesIO()
+            with zipfile.ZipFile(zip_buf, 'w') as zf:
+                gdf.to_file("temp.shp")
+                for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                    if os.path.exists(f"temp{ext}"): zf.write(f"temp{ext}", arcname=f"{datos['Propiedad']}{ext}")
+            st.download_button("🌍 Descargar Shapefile", zip_buf.getvalue(), f"GIS_{datos['Propiedad']}.zip")
