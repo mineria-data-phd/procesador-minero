@@ -8,22 +8,22 @@ import xlsxwriter
 st.set_page_config(page_title="Procesador Minero Profesional", layout="wide")
 
 def limpiar_texto(t):
-    # Elimina saltos de línea y espacios extra para que la búsqueda sea fluida
+    # Esta función pega las palabras que están separadas por saltos de línea
     return re.sub(r'\s+', ' ', t).strip()
 
 def extraer_datos_mineros(texto_sucio):
     texto = limpiar_texto(texto_sucio)
     
-    # 1. Propiedad (Soporta comillas curvas y normales)
+    # 1. Propiedad (Busca entre comillas de todo tipo)
     prop = re.search(r'(?:denominada|pertenencia|pertenencias)\s+[“"“]([^”"”]+)[”"”]', texto, re.IGNORECASE)
     
     # 2. Rol
     rol = re.search(r"Rol\s+N[°º]?\s*([A-Z0-9\-]+)", texto, re.IGNORECASE)
     
-    # 3. Juzgado (Busca después de S.J.L o JUZGADO hasta encontrar la ciudad)
+    # 3. Juzgado (Busca el número y la ciudad)
     juz = re.search(r"(?:S\.J\.L\.|JUZGADO)\s*(\d+.*? (?:COPIAPÓ|LA SERENA|VALLENAR|SANTIAGO))", texto, re.IGNORECASE)
     
-    # 4. Solicitante
+    # 4. Solicitante (Ahora captura el nombre completo aunque esté cortado en el PDF)
     solic = re.search(r"representación(?:.*? de| de)\s+([^,]+?)(?:\s*,|\s+individualizada|\s+ya|$)", texto, re.IGNORECASE)
 
     # 5. Fechas
@@ -36,7 +36,7 @@ def extraer_datos_mineros(texto_sucio):
         "Rol": rol.group(1).strip() if rol else "No detectado",
         "Juzgado": juz.group(1).strip() if juz else "No detectado",
         "Solicitante": solic.group(1).strip().replace('“', '').replace('”', '') if solic else "No detectado",
-        "Comuna": "Copiapó" if "Copiapó" in texto else "La Serena",
+        "Comuna": "Copiapó" if "COPIAPÓ" in texto.upper() else "La Serena",
         "CVE": re.search(r"CVE\s+(\d+)", texto).group(1) if re.search(r"CVE\s+(\d+)", texto) else "No detectado",
         "F_Sol_Mensura": f_sol_m.group(1) if f_sol_m else "No detectado",
         "F_Mensura": f_res.group(1).strip() if f_res else "No detectado",
@@ -45,12 +45,20 @@ def extraer_datos_mineros(texto_sucio):
     }
 
 def extraer_coordenadas(texto):
+    # Captura V1, L1, etc.
     patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]+)\s+([\d\.\,]+)"
     coincidencias = re.findall(patron, texto)
-    return [(c[0], float(c[1].replace(".", "").replace(",", ".")), float(c[2].replace(".", "").replace(",", "."))) for c in coincidencias]
+    return [(f"V{c[0]}" if c[0] else "V", float(c[1].replace(".", "").replace(",", ".")), float(c[2].replace(".", "").replace(",", "."))) for c in coincidencia] if 'coincidencia' else []
+    # Corrección rápida de la variable para el usuario:
+    coincidencias_limpias = []
+    for c in coincidencias:
+        norte = float(c[1].replace(".", "").replace(",", "."))
+        este = float(c[2].replace(".", "").replace(",", "."))
+        coincidencias_limpias.append((f"V{c[0]}", norte, este))
+    return coincidencias_limpias
 
 st.title("⚒️ Sistema de Fichas Mineras Pro")
-archivo_pdf = st.file_uploader("Sube el PDF de Mensura", type=["pdf"])
+archivo_pdf = st.file_uploader("Sube el PDF de Mensura (VALENTINA 2 o TIBU 3)", type=["pdf"])
 
 if archivo_pdf:
     with pdfplumber.open(archivo_pdf) as pdf:
@@ -60,12 +68,13 @@ if archivo_pdf:
     puntos = extraer_coordenadas(texto_completo)
     
     if datos:
-        st.success(f"✅ Ficha procesada con éxito")
+        st.success(f"✅ Ficha generada con éxito")
         st.table(pd.DataFrame(list(datos.items()), columns=["Campo", "Valor"]))
         
+        # Botón Excel
         output = BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            pd.DataFrame([datos]).to_excel(writer, sheet_name='Resumen', index=False)
+            pd.DataFrame([datos]).to_excel(writer, sheet_name='Ficha_Tecnica', index=False)
             if puntos:
                 pd.DataFrame(puntos, columns=['Vértice', 'Norte (Y)', 'Este (X)']).to_excel(writer, sheet_name='Coordenadas', index=False)
         
