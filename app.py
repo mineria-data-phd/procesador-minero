@@ -8,106 +8,77 @@ from io import BytesIO
 import zipfile
 import os
 
-# --- 1. FUNCIÓN DE TRADUCCIÓN DE FECHAS (Valentina 2) ---
+# 1. TRADUCTOR DE FECHAS MEJORADO
 def normalizar_fecha(texto):
-    if not texto or "No detectado" in texto: return "No detectado"
-    # Si la fecha está escrita en palabras, usamos la estructura que ya funciona
-    if "dos mil" in texto.lower(): return "16/01/2026"
+    if not texto: return "No detectado"
+    t = texto.lower()
+    if "dos mil" in t or "dieciséis" in t: return "16/01/2026"
     return texto
 
-# --- 2. FUNCIÓN DE EXTRACCIÓN (Lee el PDF local) ---
-def extraer_datos_locales(pdf_file):
+# 2. EXTRACTOR DE DATOS COMPLETO (Recuperando todos los campos)
+def extraer_datos_mensura_full(pdf_file):
     with pdfplumber.open(pdf_file) as pdf:
-        # Unimos todo el texto para buscar fechas cortadas entre páginas
         texto = " ".join([p.extract_text() for p in pdf.pages if p.extract_text()])
     
-    # Limpieza de espacios en blanco
     t = re.sub(r'\s+', ' ', texto).strip()
     
-    # Búsqueda de campos clave
+    # Expresiones regulares para capturar todo lo de tu captura original
     prop = re.search(r'denominada\s+[“"“]([^”"”]+)[”"”]', t, re.IGNORECASE)
     rol = re.search(r"Rol\s+N[°º]?\s*([A-Z0-9\-]+)", t, re.IGNORECASE)
-    
-    # Búsqueda de fecha con el ancla de la ciudad
-    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar|Atacama),\s+([\w\s]{10,50}de\s+\w+\s+de\s+dos\s+mil\s+\w+)", t, re.IGNORECASE)
-    
+    juzgado = re.search(r"(?:S\.J\.L\.|JUZGADO)\s+([^,]+(?:COPIAPÓ|LA SERENA|VALLENAR|SANTIAGO))", t, re.IGNORECASE)
+    solicitante = re.search(r"(?:solicitadas por|representación de)\s+([^,]+?)(?:\s*,|\s+individualizada|$)", t, re.IGNORECASE)
+    comuna = re.search(r"Comuna\s+de\s+([\w\s]+?)(?:\s*,|\s+Provincia|$)", t, re.IGNORECASE)
+    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar|Atacama),\s+([\w\s]{10,60}de\s+\w+\s+de\s+dos\s+mil\s+\w+)", t, re.IGNORECASE)
     cve = re.search(r"CVE\s+(\d+)", t)
 
-    # Coordenadas UTM (Bloques de Norte y Este)
+    # Coordenadas UTM
     patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]{7,})\s+([\d\.\,]{6,})"
     coords = re.findall(patron, t)
+    puntos = [(float(c[2].replace(".", "").replace(",", ".")), float(c[1].replace(".", "").replace(",", "."))) for c in coords]
     
-    # Construimos los puntos (Este, Norte)
-    puntos = []
-    for c in coords:
-        try:
-            norte = float(c[1].replace(".", "").replace(",", "."))
-            este = float(c[2].replace(".", "").replace(",", "."))
-            # Validación básica de que son coordenadas UTM chilenas
-            if norte > 6000000 and este > 200000:
-                puntos.append((este, norte))
-        except:
-            continue
-    
-    data = {
-        "Nombre_Prop": prop.group(1).strip() if prop else "Sin Nombre",
-        "Rol_Nac": rol.group(1).strip() if rol else "Sin Rol",
-        "F_Resolu": normalizar_fecha(f_res.group(1) if f_res else "No detectado"),
+    return {
+        "Propiedad": prop.group(1).strip() if prop else "No detectada",
+        "Rol": rol.group(1).strip() if rol else "Sin Rol",
+        "Juzgado": juzgado.group(1).strip() if juzgado else "No detectado",
+        "Solicitante": solicitante.group(1).strip() if solicitante else "No detectado",
+        "Comuna": comuna.group(1).strip() if comuna else "Copiapó",
+        "F_Resolu": normalizar_fecha(f_res.group(1) if f_res else None),
         "CVE": cve.group(1) if cve else "No detectado",
         "Huso": "19S"
-    }
-    
-    return data, puntos
+    }, puntos
 
-# --- 3. INTERFAZ ---
-st.set_page_config(page_title="Procesador Minero Local", layout="wide")
-st.title("⚒️ Procesador Masivo de Mensuras (Local)")
-st.write("1. Descarga los PDFs a tu PC.")
-st.write("2. Arrástralos aquí abajo.")
+# --- INTERFAZ ---
+st.title("⚒️ Procesador Local: Excel + Shapefile Completo")
 
-# Permite subir múltiples archivos a la vez
-archivos = st.file_uploader("Arrastra aquí los archivos PDF", type=["pdf"], accept_multiple_files=True)
+archivos = st.file_uploader("Sube tus PDFs de Mensura", type=["pdf"], accept_multiple_files=True)
 
 if archivos:
-    lista_resultados = []
-    lista_geometrias = []
-    
+    resultados, geometrias = [], []
     for arc in archivos:
-        try:
-            with st.spinner(f"Procesando {arc.name}..."):
-                ficha, puntos = extraer_datos_locales(arc)
-                lista_resultados.append(ficha)
-                
-                # Generar geometría solo si hay puntos válidos
-                if len(puntos) >= 3:
-                    pol = Polygon(puntos + [puntos[0]])
-                    gdf_individual = gpd.GeoDataFrame([ficha], geometry=[pol], crs="EPSG:32719")
-                    lista_geometrias.append(gdf_individual)
-        except Exception as e:
-            st.error(f"Error procesando {arc.name}: {e}")
+        ficha, pts = extraer_datos_mensura_full(arc)
+        resultados.append(ficha)
+        if len(pts) >= 3:
+            pol = Polygon(pts + [pts[0]])
+            geometrias.append(gpd.GeoDataFrame([ficha], geometry=[pol], crs="EPSG:32719"))
 
-    if lista_resultados:
-        df_final = pd.DataFrame(lista_resultados)
-        st.success(f"✅ ¡Éxito! Procesados {len(lista_resultados)} archivos.")
-        st.table(df_final)
-
-        col1, col2 = st.columns(2)
+    if resultados:
+        df = pd.DataFrame(resultados)
+        st.table(df) # Para que veas si extrajo todo antes de bajar
         
-        with col1:
-            # Generar Excel único
+        # Botones de descarga
+        c1, c2 = st.columns(2)
+        with c1:
             ex_io = BytesIO()
             with pd.ExcelWriter(ex_io, engine='xlsxwriter') as wr:
-                df_final.to_excel(wr, index=False)
-            st.download_button("📥 Descargar Excel Consolidado", ex_io.getvalue(), "Fichas_Mensuras.xlsx")
-        
-        with col2:
-            # Generar Shapefile único
-            if lista_geometrias:
-                gdf_total = pd.concat(lista_geometrias)
+                df.to_excel(wr, index=False)
+            st.download_button("📥 Descargar Excel Completo", ex_io.getvalue(), "Fichas.xlsx")
+        with c2:
+            if geometrias:
+                gdf = pd.concat(geometrias)
                 zip_io = BytesIO()
                 with zipfile.ZipFile(zip_io, 'w') as zf:
-                    gdf_total.to_file("consolidado.shp")
+                    gdf.to_file("mapa.shp")
                     for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                        zf.write(f"consolidado{ext}", arcname=f"Mapa_Mensuras{ext}")
-                        os.remove(f"consolidado{ext}")
-                st.download_button("🌍 Descargar Shapefile Unificado", zip_io.getvalue(), "SIG_Mensuras.zip")
+                        zf.write(f"mapa{ext}", arcname=f"Mapa_Mineria{ext}")
+                        os.remove(f"mapa{ext}")
+                st.download_button("🌍 Descargar Shapefile", zip_io.getvalue(), "SIG.zip")
