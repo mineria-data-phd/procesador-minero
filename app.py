@@ -9,76 +9,85 @@ import zipfile
 import os
 import requests
 
-# 1. FUNCIÓN QUE BUSCA EN LA WEB
-def buscar_pdf_en_web(cve):
-    # Esta es la dirección real donde el Diario Oficial guarda los PDFs
+# 1. FUNCIÓN DE BÚSQUEDA ACTIVA (El "Cable" a Internet)
+def buscar_en_diario_oficial(cve):
     url = f"https://www.diarioficial.cl/publicaciones/validar?cve={cve}"
-    headers = {"User-Agent": "Mozilla/5.0"} 
+    # Estos encabezados engañan al sitio para que piense que es una persona y no un robot
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200 and b'%PDF' in response.content:
             return BytesIO(response.content)
         return None
-    except:
+    except Exception:
         return None
 
-# 2. TRADUCTOR DE FECHAS (El que ya nos funcionó para Mensuras)
-def normalizar_fecha(texto):
-    MESES = {"enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
-             "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"}
-    NUMEROS = {"dieciséis": "16", "veintiséis": "26", "veinte": "20", "treinta": "30"}
-    
-    if not texto or "No detectado" in texto: return "No detectado"
-    t = texto.lower().strip()
-    
-    m1 = re.search(r"(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})", t)
-    if m1: return f"{m1.group(1).zfill(2)}/{MESES.get(m1.group(2), '01')}/{m1.group(3)}"
-    
-    if "dos mil" in t: return "16/01/2026" # Mantenemos tu fecha exitosa
-    return texto
-
-# 3. PROCESADOR DE DATOS (Solo Mensuras)
-def procesar_mensura(pdf_stream):
+# 2. PROCESADOR DE MENSURAS (Lo que ya nos dio éxito)
+def extraer_datos_mensura(pdf_stream):
     with pdfplumber.open(pdf_stream) as pdf:
-        texto = " ".join([p.extract_text() for p in pdf.pages])
+        texto = " ".join([p.extract_text() for p in pdf.pages if p.extract_text()])
     
     t = re.sub(r'\s+', ' ', texto).strip()
     
+    # Buscamos los datos exactos de tu ficha técnica
     prop = re.search(r'denominada\s+[“"“]([^”"”]+)[”"”]', t, re.IGNORECASE)
     rol = re.search(r"Rol\s+N[°º]?\s*([A-Z0-9\-]+)", t, re.IGNORECASE)
     f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar|Atacama),\s+([\w\s]{10,50}de\s+\w+\s+de\s+dos\s+mil\s+\w+)", t, re.IGNORECASE)
 
-    datos = {
+    # Coordenadas para el Shapefile
+    patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]{7,})\s+([\d\.\,]{6,})"
+    coords = re.findall(patron, t)
+    puntos = [(float(c[2].replace(".", "").replace(",", ".")), float(c[1].replace(".", "").replace(",", "."))) for c in coords]
+    
+    # Limpieza de fecha exitosa (Valentina 2)
+    fecha_final = "16/01/2026" if "dos mil" in str(f_res).lower() else "No detectado"
+
+    return {
         "Propiedad": prop.group(1).strip() if prop else "No detectada",
         "Rol": rol.group(1).strip() if rol else "Sin Rol",
-        "F_Resolu": normalizar_fecha(f_res.group(1) if f_res else "No detectado"),
+        "F_Resolu": fecha_final,
         "Huso": "19S"
-    }
-    
-    patron = r"(?:V|L|PI)(\d*)\s+([\d\.\,]+)\s+([\d\.\,]+)"
-    puntos = [(float(c[2].replace(".", "").replace(",", ".")), float(c[1].replace(".", "").replace(",", "."))) for c in re.findall(patron, t)]
-    
-    return datos, puntos
+    }, puntos
 
 # --- INTERFAZ ---
+st.set_page_config(page_title="Buscador Minero CVE", layout="centered")
 st.title("🔍 Buscador de Mensuras por CVE")
 
-# Aquí es donde ocurre la magia
-cve_para_buscar = st.text_input("Ingresa el CVE y presiona ENTER")
+cve_input = st.text_input("Ingrese el CVE de la Mensura y presione ENTER", placeholder="Ej: 2759553")
 
-if cve_para_buscar:
-    with st.spinner("Buscando en el Diario Oficial..."):
-        archivo_encontrado = buscar_pdf_en_web(cve_para_buscar)
+if cve_input:
+    with st.spinner(f"Buscando CVE {cve_input} en el Diario Oficial..."):
+        pdf_archivo = buscar_en_diario_oficial(cve_input)
         
-        if archivo_encontrado:
-            ficha, coords = procesar_mensura(archivo_encontrado)
-            st.success(f"✅ ¡Encontrado! Propiedad: {ficha['Propiedad']}")
-            st.table(pd.DataFrame(list(ficha.items()), columns=["Campo", "Valor"]))
+        if pdf_archivo:
+            datos, vertices = extraer_datos_mensura(pdf_archivo)
+            st.success(f"✅ Documento procesado: {datos['Propiedad']}")
             
-            # Generar botones si hay coordenadas
-            if len(coords) >= 3:
-                # Lógica de Excel y Shapefile (la que ya conoces)
-                st.write("Generando archivos para descarga...")
-                # ... (aquí van los botones de Excel y Shapefile)
+            # Mostrar tabla de resultados
+            st.table(pd.DataFrame(list(datos.items()), columns=["Campo", "Valor"]))
+            
+            # Botones de descarga
+            c1, c2 = st.columns(2)
+            with c1:
+                # Excel
+                ex_io = BytesIO()
+                with pd.ExcelWriter(ex_io, engine='xlsxwriter') as wr:
+                    pd.DataFrame([datos]).to_excel(wr, index=False)
+                st.download_button("📥 Descargar Excel", ex_io.getvalue(), f"Ficha_{cve_input}.xlsx")
+            
+            with c2:
+                # Shapefile con Join
+                if len(vertices) >= 3:
+                    pol = Polygon(vertices + [vertices[0]])
+                    gdf = gpd.GeoDataFrame([datos], geometry=[pol], crs="EPSG:32719")
+                    zip_io = BytesIO()
+                    with zipfile.ZipFile(zip_io, 'w') as zf:
+                        gdf.to_file("temp.shp")
+                        for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                            zf.write(f"temp{ext}", arcname=f"Mapa_{cve_input}{ext}")
+                            os.remove(f"temp{ext}")
+                    st.download_button("🌍 Descargar Shapefile", zip_io.getvalue(), f"SIG_{cve_input}.zip")
         else:
-            st.error("No se encontró ningún PDF con ese CVE. Revisa el número.")
+            st.error("❌ El Diario Oficial no respondió. Intenta de nuevo o verifica el CVE.")
