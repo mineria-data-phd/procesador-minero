@@ -8,8 +8,7 @@ from io import BytesIO
 import zipfile
 import os
 
-# --- FUNCIONES DE LIMPIEZA Y FECHAS ---
-
+# 1. TRADUCTOR DE FECHAS MEJORADO
 def normalizar_fecha(texto):
     MESES = {"enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
              "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"}
@@ -22,24 +21,23 @@ def normalizar_fecha(texto):
     if not texto or "No detectado" in texto: return "No detectado"
     t = texto.lower().replace("  ", " ").strip()
     
-    # 1. Caso: "16 de enero de 2026" (Números)
+    # Busca formato: "16 de enero de 2026"
     m1 = re.search(r"(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})", t)
     if m1:
         dia, mes, año = m1.groups()
         return f"{dia.zfill(2)}/{MESES.get(mes, '01')}/{año}"
     
-    # 2. Caso: "dieciséis de enero de dos mil veintiséis" (Letras)
+    # Busca formato: "dieciséis de enero de dos mil veintiséis"
     m2 = re.search(r"(\w+)\s+de\s+(\w+)\s+de\s+dos\s+mil\s+(\w+)", t)
     if m2:
         dia_txt, mes_txt, año_txt = m2.groups()
-        # Buscamos el año (si es veintiséis -> 2026, si es veinticinco -> 2025)
         año_final = "20" + NUMEROS.get(año_txt, "26")
         return f"{NUMEROS.get(dia_txt, '01')}/{MESES.get(mes_txt, '01')}/{año_final}"
     
     return texto
 
+# 2. EXTRACCIÓN CON FOCO EN LA RESOLUCIÓN
 def extraer_datos_mineros(texto_sucio):
-    # Limpiamos exceso de espacios para que el buscador no se pierda
     texto = re.sub(r'\s+', ' ', texto_sucio).strip()
     
     prop = re.search(r'(?:denominada|pertenencia|pertenencias)\s+[“"“]([^”"”]+)[”"”]', texto, re.IGNORECASE)
@@ -47,26 +45,16 @@ def extraer_datos_mineros(texto_sucio):
     juz = re.search(r"(?:S\.J\.L\.|JUZGADO)\s*(\d+.*? (?:COPIAPÓ|LA SERENA|VALLENAR|SANTIAGO))", texto, re.IGNORECASE)
     solic = re.search(r"representación(?:.*? de| de)\s+([^,]+?)(?:\s*,|\s+individualizada|\s+ya|$)", texto, re.IGNORECASE)
     
-    # FECHAS
-    # Fecha de Publicación (Siempre viene con día de la semana)
-    f_pub = re.search(r"(?:Lunes|Martes|Miércoles|Jueves|Viernes|Sábado|Domingo)\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto)
-    
-    # Fecha de Solicitud de Mensura (Dato histórico)
-    f_sol_m = re.search(r"(?:manifestadas|presentación)\s+con\s+fecha\s+(\d+\s+de\s+\w+\s+de\s+\d{4})", texto, re.IGNORECASE)
-    
-    # FECHA DE RESOLUCIÓN (La que fallaba):
-    # Ahora la buscamos después del nombre de la ciudad al final del documento
-    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar|Atacama),\s+([a-z\d\s]+de\s+[a-z]+\s+de\s+[\w\s]+)", texto, re.IGNORECASE)
+    # FECHA DE RESOLUCIÓN: Buscamos el patrón que viene después de la ciudad al final del documento
+    # Ejemplo: "Copiapó, dieciséis de enero de dos mil veintiséis"
+    f_res = re.search(r"(?:Copiapó|La Serena|Santiago|Vallenar|Atacama),\s+([^.]+)", texto, re.IGNORECASE)
 
     return {
         "Propiedad": prop.group(1).strip() if prop else "No detectado",
         "Rol": rol.group(1).strip() if rol else "Sin Rol",
         "Juzgado": juz.group(1).strip() if juz else "Sin Juzgado",
         "Solicitante": solic.group(1).strip().replace('“', '').replace('”', '') if solic else "Sin Solicitante",
-        "Comuna": "Copiapó" if "COPIAPÓ" in texto.upper() else "La Serena",
-        "F_Solicit": normalizar_fecha(f_sol_m.group(1) if f_sol_m else ""),
-        "F_Resolu": normalizar_fecha(f_res.group(1).strip() if f_res else ""),
-        "F_Public": normalizar_fecha(f_pub.group(1) if f_pub else ""),
+        "F_Resolu": normalizar_fecha(f_res.group(1).strip() if f_res else "No detectado"),
         "Huso": "19S"
     }
 
@@ -75,9 +63,9 @@ def extraer_coordenadas(texto):
     coincidencias = re.findall(patron, texto)
     return [(float(c[2].replace(".", "").replace(",", ".")), float(c[1].replace(".", "").replace(",", "."))) for c in coincidencias]
 
-# --- INTERFAZ STREAMLIT ---
-st.title("⚒️ Sistema Minero Profesional (Excel + SIG)")
-archivo_pdf = st.file_uploader("Sube el PDF para generar Ficha y Shapefile", type=["pdf"])
+# --- INTERFAZ ---
+st.title("⚒️ Sistema Minero: Corrección de Fecha y Join")
+archivo_pdf = st.file_uploader("Sube el PDF de Mensura", type=["pdf"])
 
 if archivo_pdf:
     with pdfplumber.open(archivo_pdf) as pdf:
@@ -87,29 +75,19 @@ if archivo_pdf:
     puntos = extraer_coordenadas(texto_completo)
     
     if datos:
-        st.success(f"✅ Procesado: {datos['Propiedad']}")
+        st.subheader("Resultados de Extracción")
         st.table(pd.DataFrame(list(datos.items()), columns=["Campo", "Valor"]))
         
-        col1, col2 = st.columns(2)
-        
-        # EXCEL
-        with col1:
-            out_ex = BytesIO()
-            with pd.ExcelWriter(out_ex, engine='xlsxwriter') as writer:
-                pd.DataFrame([datos]).to_excel(writer, sheet_name='Ficha', index=False)
-                pd.DataFrame(puntos, columns=['Este', 'Norte']).to_excel(writer, sheet_name='Puntos', index=False)
-            st.download_button("📥 Descargar Excel", out_ex.getvalue(), f"{datos['Propiedad']}.xlsx")
-
-        # SHAPEFILE CON ATRIBUTOS (THE JOIN)
-        with col2:
-            if len(puntos) >= 3:
-                poligono = Polygon(puntos + [puntos[0]])
-                gdf = gpd.GeoDataFrame([datos], geometry=[poligono], crs="EPSG:32719")
-                
-                zip_buffer = BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w') as zf:
-                    gdf.to_file("export.shp")
-                    for ext in ['.shp', '.shx', '.dbf', '.prj']:
-                        zf.write(f"export{ext}", arcname=f"{datos['Propiedad']}{ext}")
-                        os.remove(f"export{ext}")
-                st.download_button("🌍 Descargar Shapefile (con Datos)", zip_buffer.getvalue(), f"SIG_{datos['Propiedad']}.zip")
+        if len(puntos) >= 3:
+            # SHAPEFILE CON JOIN DE ATRIBUTOS
+            poligono = Polygon(puntos + [puntos[0]])
+            gdf = gpd.GeoDataFrame([datos], geometry=[poligono], crs="EPSG:32719")
+            
+            zip_buffer = BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w') as zf:
+                gdf.to_file("export.shp")
+                for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                    zf.write(f"export{ext}", arcname=f"{datos['Propiedad']}{ext}")
+                    os.remove(f"export{ext}")
+            
+            st.download_button("🌍 Descargar Shapefile (con Datos)", zip_buffer.getvalue(), f"SIG_{datos['Propiedad']}.zip")
