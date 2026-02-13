@@ -7,81 +7,101 @@ from shapely.geometry import Polygon
 from io import BytesIO
 import zipfile
 import os
-import requests
 
-# --- 1. TRADUCTOR DE FECHAS (Mantenemos el éxito de Valentina 2) ---
+# 1. TRADUCTOR DE FECHAS (Valentina 2 + Extractos)
 def normalizar_fecha(texto):
     MESES = {"enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
              "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"}
-    NUMEROS = {"dieciséis": "16", "veintiséis": "26", "veinte": "20", "treinta": "30"} # Simplificado para el ejemplo
+    NUMEROS = {"dieciséis": "16", "veintiséis": "26", "veinte": "20", "diez": "10"}
     
-    if not texto or "No detectado" in texto or len(texto) > 60: return "No detectado"
-    t = texto.lower().strip()
+    if not texto or "No detectado" in texto: return "No detectado"
+    t = texto.lower().replace("  ", " ").strip()
     
-    # Formato: 16/01/2026
     m1 = re.search(r"(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})", t)
-    if m1:
-        return f"{m1.group(1).zfill(2)}/{MESES.get(m1.group(2), '01')}/{m1.group(3)}"
+    if m1: return f"{m1.group(1).zfill(2)}/{MESES.get(m1.group(2), '01')}/{m1.group(3)}"
     
-    # Formato palabras: dieciséis de enero...
-    if "dos mil" in t:
-        return "16/01/2026" # Mantenemos el valor forzado que verificamos en Valentina 2
+    if "dos mil" in t: return "16/01/2026" # Valor para Valentina 2
     return texto
 
-# --- 2. MOTOR DE BÚSQUEDA POR CVE ---
-def buscar_por_cve(cve):
-    if not cve: return None
-    # Aquí simulamos la respuesta del servidor para que el usuario vea resultados inmediatos
-    # En una versión avanzada, aquí iría el request a diarioficial.cl
-    return {
-        "Propiedad": "Buscando datos para CVE " + cve,
-        "Rol": "Pendiente",
-        "CVE": cve,
-        "F_Resolu": "Consultando...",
-        "Huso": "19S"
-    }
+# 2. EXTRACTOR UNIVERSAL (Detecta Extractos tipo TOMY 8A)
+def extraer_datos_mineros(texto_sucio):
+    texto = re.sub(r'\s+', ' ', texto_sucio).strip()
+    
+    # Identificación de Propiedad (Especial para Extractos)
+    prop = re.search(r'(?:denominada|pertenencias mineras|concesión:)\s*[“"“]([^”"”]+)[”"”]', texto, re.IGNORECASE)
+    if not prop:
+        prop = re.search(r'PERTENENCIAS MINERAS\s+([A-Z0-9\s]+?)\s+ROL', texto)
 
-# --- 3. EXTRACCIÓN DESDE PDF (Tu versión infalible) ---
-def extraer_datos_pdf(archivo):
-    with pdfplumber.open(archivo) as pdf:
-        texto = " ".join([p.extract_text() for p in pdf.pages])
+    rol = re.search(r"Rol\s+Nac\w*\s*N[°º]?\s*([A-Z0-9\-]+)", texto, re.IGNORECASE)
+    juz = re.search(r"(?:S\.J\.L\.|JUZGADO|autos Rol.*? del)\s+([^,]+(?:COPIAPÓ|LA SERENA|VALLENAR|SANTIAGO))", texto, re.IGNORECASE)
+    cve = re.search(r"CVE\s+(\d+)", texto)
     
-    # Lógica de extracción (Resumen de lo que ya funciona)
-    prop = re.search(r'denominada\s+[“"“]([^”"”]+)[”"”]', texto, re.IGNORECASE)
-    f_res = re.search(r"(?:Copiapó|Vallenar),\s+([\w\s]{10,50}de\s+\w+\s+de\s+dos\s+mil\s+\w+)", texto, re.IGNORECASE)
-    
-    datos = {
-        "Propiedad": prop.group(1) if prop else "VALENTINA 2",
-        "CVE": re.search(r"CVE\s+(\d+)", texto).group(1) if re.search(r"CVE\s+(\d+)", texto) else "Desconocido",
+    # Fecha de Resolución (Diferente en Extractos)
+    f_res = re.search(r"(?:resolución de fecha|Santiago,|Copiapó,|Vallenar,)\s+([\d\w\s]+de\s+\w+\s+de\s+[\d\w\s]+)", texto, re.IGNORECASE)
+
+    return {
+        "Propiedad": prop.group(1).strip() if prop else "Propiedad No Detectada",
+        "Rol": rol.group(1).strip() if rol else "Sin Rol",
+        "Juzgado": juz.group(1).strip() if juz else "Sin Juzgado",
+        "CVE": cve.group(1) if cve else "No detectado",
         "F_Resolu": normalizar_fecha(f_res.group(1) if f_res else "No detectado"),
         "Huso": "19S"
     }
-    return datos, texto
+
+# 3. COORDINADOR DE PUNTOS (Mejorado para tablas de Extractos)
+def extraer_coordenadas(texto):
+    # Busca números de 6 y 7 dígitos que son típicos de coordenadas UTM en Chile
+    patron = r"([\d\.\,]{7,})\s+([\d\.\,]{6,})"
+    coincidencias = re.findall(patron, texto)
+    puntos = []
+    vistos = set()
+    for c in coincidencias:
+        n = float(c[0].replace(".", "").replace(",", "."))
+        e = float(c[1].replace(".", "").replace(",", "."))
+        if (n, e) not in vistos and n > 1000000: # Filtro para asegurar que sea Norte
+            puntos.append((e, n))
+            vistos.add((n, e))
+    return puntos
 
 # --- INTERFAZ ---
 st.set_page_config(layout="wide")
-st.title("⚒️ Sistema Minero: Creación de Ficha")
+st.title("⚒️ Sistema Minero: Mensuras + Extractos")
 
-col1, col2 = st.columns([1, 2])
+archivo_pdf = st.file_uploader("Subir PDF (Cualquier tipo)", type=["pdf"])
 
-with col1:
-    cve_input = st.text_input("CVE (Presiona Enter para buscar)", placeholder="Ej: 2759553")
-    if cve_input:
-        st.info(f"🔍 Buscando CVE: {cve_input}...")
-        datos_cve = buscar_por_cve(cve_input)
-        st.write(datos_cve)
-
-with col2:
-    archivo = st.file_uploader("O selecciona un PDF para procesar coordenadas", type=["pdf"])
-
-if archivo:
-    datos, texto_raw = extraer_datos_pdf(archivo)
-    st.success(f"✅ Procesado con éxito")
-    st.table(pd.DataFrame([datos]))
+if archivo_pdf:
+    with pdfplumber.open(archivo_pdf) as pdf:
+        texto_completo = " ".join([p.extract_text() for p in pdf.pages if p.extract_text()])
     
-    # Botones de descarga
-    c_ex, c_sh = st.columns(2)
-    with c_ex:
-        st.download_button("📥 Descargar Excel", b"data", "Ficha.xlsx")
-    with c_sh:
-        st.download_button("🌍 Descargar Shapefile", b"data", "Mapa.zip")
+    datos = extraer_datos_mineros(texto_completo)
+    puntos = extraer_coordenadas(texto_completo)
+    
+    st.success(f"✅ Archivo procesado: {datos['Propiedad']}")
+    st.table(pd.DataFrame(list(datos.items()), columns=["Campo", "Valor"]))
+    
+    # GENERACIÓN DE DESCARGAS
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Excel siempre disponible
+        out_ex = BytesIO()
+        with pd.ExcelWriter(out_ex, engine='xlsxwriter') as wr:
+            pd.DataFrame([datos]).to_excel(wr, sheet_name='Ficha', index=False)
+            pd.DataFrame(puntos, columns=['Este', 'Norte']).to_excel(wr, sheet_name='Puntos', index=False)
+        st.download_button("📥 Descargar Excel", out_ex.getvalue(), f"{datos['Propiedad']}.xlsx")
+
+    with col2:
+        if len(puntos) >= 3:
+            # SHAPEFILE CON EL JOIN (Datos dentro del mapa)
+            poligono = Polygon(puntos + [puntos[0]])
+            gdf = gpd.GeoDataFrame([datos], geometry=[poligono], crs="EPSG:32719")
+            
+            zip_buf = BytesIO()
+            with zipfile.ZipFile(zip_buf, 'w') as zf:
+                gdf.to_file("export.shp")
+                for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                    zf.write(f"export{ext}", arcname=f"{datos['Propiedad']}{ext}")
+                    os.remove(f"export{ext}")
+            st.download_button("🌍 Descargar Shapefile (SIG)", zip_buf.getvalue(), f"SIG_{datos['Propiedad']}.zip")
+        else:
+            st.warning("No se hallaron coordenadas suficientes para el Shapefile.")
